@@ -8,7 +8,7 @@ import com.intellij.ui.content.ContentFactory
 
 class ImageGalleryToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = ImageGalleryPanel(project)
+        val panel = JcefImageGalleryPanel(project)
         val content = ContentFactory.getInstance().createContent(panel, "Gallery", false)
         content.setDisposer { panel.disposePanel() }
         toolWindow.contentManager.addContent(content)

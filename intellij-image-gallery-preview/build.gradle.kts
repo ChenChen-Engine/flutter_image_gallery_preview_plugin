@@ -50,6 +50,7 @@ repositories {
 
 dependencies {
     implementation("org.yaml:snakeyaml:2.2")
+    implementation("com.google.code.gson:gson:2.11.0")
     implementation("com.drewnoakes:metadata-extractor:2.19.0")
     implementation("org.apache.commons:commons-imaging:1.0.0-alpha5")
     testImplementation(kotlin("test"))
@@ -68,6 +69,11 @@ intellijPlatform {
 tasks {
     named("verifyPluginProjectConfiguration") { enabled = false }
     named("buildSearchableOptions") { enabled = false }
+    named<Copy>("processResources") {
+        from(rootProject.layout.projectDirectory.dir("../gallery-web")) {
+            into("gallery-web")
+        }
+    }
 
     withType<JavaCompile> {
         sourceCompatibility = "17"

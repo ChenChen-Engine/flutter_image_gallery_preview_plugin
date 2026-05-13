@@ -5,11 +5,7 @@ import exifReader from 'exif-reader';
 import sharp from 'sharp';
 import { scanAssets } from './scanner';
 import { GalleryAssetItem, ImageInfo, PlatformType } from './shared/types';
-
-interface WebviewAssetItem extends GalleryAssetItem {
-  thumbnailUri: string | null;
-  canPreviewRaster: boolean;
-}
+import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
 class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'imageGalleryPreview.view';
@@ -22,8 +18,16 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private refreshTask: Promise<void> | null = null;
   private refreshPending = false;
   private afterRefreshQueue: Array<(items: GalleryAssetItem[]) => Promise<void> | void> = [];
+  private started = false;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
+
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+    this.setupWatchers();
+    void this.refresh();
+  }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void | Thenable<void> {
     this.view = webviewView;
@@ -35,38 +39,9 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       ]
     };
 
-    const htmlPath = path.join(this.context.extensionPath, 'webview', 'index.html');
-    webviewView.webview.html = fs.readFileSync(htmlPath, 'utf8');
-
-    webviewView.webview.onDidReceiveMessage(async (message) => {
-      if (message?.type === 'ready' || message?.type === 'refresh') {
-        await this.refresh();
-        return;
-      }
-
-      if (message?.type === 'open' && typeof message.absPath === 'string') {
-        await openResourceByPath(message.absPath);
-        return;
-      }
-
-      if (message?.type === 'copy' && typeof message.value === 'string' && typeof message.label === 'string') {
-        await vscode.env.clipboard.writeText(message.value);
-        vscode.window.setStatusBarMessage(`Copied ${message.label}: ${message.value}`, 1500);
-        return;
-      }
-
-      if (message?.type === 'requestImageInfo' && typeof message.absPath === 'string') {
-        const info = await this.loadImageInfo(message.absPath);
-        await this.view?.webview.postMessage({
-          type: 'imageInfo',
-          absPath: normalizePath(message.absPath),
-          info
-        });
-      }
-    });
-
-    this.setupWatchers();
-    void this.refresh();
+    webviewView.webview.html = this.htmlForWebview(webviewView.webview);
+    webviewView.webview.onDidReceiveMessage((message) => void this.handleWebMessage(message));
+    this.start();
   }
 
   async refresh(afterRefresh?: (items: GalleryAssetItem[]) => Promise<void> | void): Promise<void> {
@@ -97,13 +72,51 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     this.watchers = [];
   }
 
+  private async handleWebMessage(message: any): Promise<void> {
+    if (message?.type === 'ready') {
+      await this.postLoadingState(false, 'Ready');
+      await this.postAssets();
+      if (!this.cachedItems.length) {
+        await this.refresh();
+      }
+      return;
+    }
+
+    if (message?.type === 'refresh') {
+      await this.refresh();
+      return;
+    }
+
+    if (message?.type === 'open' && typeof message.absPath === 'string') {
+      await openResourceByPath(message.absPath);
+      return;
+    }
+
+    if (message?.type === 'copy' && typeof message.value === 'string') {
+      const label = typeof message.label === 'string' ? message.label : '内容';
+      await vscode.env.clipboard.writeText(message.value);
+      vscode.window.setStatusBarMessage(`已复制${label}: ${message.value}`, 1500);
+      return;
+    }
+
+    if (message?.type === 'requestImageInfo' && typeof message.absPath === 'string') {
+      const info = await this.loadImageInfo(message.absPath);
+      await this.view?.webview.postMessage({
+        type: 'imageInfo',
+        absPath: normalizePath(message.absPath),
+        info
+      });
+    }
+  }
+
   private async performRefresh(): Promise<void> {
+    await this.postLoadingState(true, 'Indexing assets...');
+
     if (!vscode.workspace.workspaceFolders?.length) {
       this.cachedItems = [];
       this.duplicateIndex.clear();
-      if (this.view) {
-        await this.view.webview.postMessage({ type: 'assets', items: [] });
-      }
+      await this.postAssets();
+      await this.postLoadingState(false, 'Ready');
       this.afterRefreshQueue = [];
       return;
     }
@@ -118,29 +131,33 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     this.cachedItems = items;
     this.duplicateIndex = this.buildDuplicateIndex(items);
 
-    if (this.view) {
-      const serialized: WebviewAssetItem[] = items.map((item) => {
-        const isRaster = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'].includes(item.formatFamily);
-        const normalizedAbsPath = normalizePath(item.absPath);
-
-        return {
-          ...item,
-          absPath: normalizedAbsPath,
-          thumbnailUri: isRaster
-            ? this.view!.webview.asWebviewUri(vscode.Uri.file(normalizedAbsPath)).toString()
-            : null,
-          canPreviewRaster: isRaster,
-          imageInfo: this.infoCache.get(normalizedAbsPath)
-        };
-      });
-
-      await this.view.webview.postMessage({ type: 'assets', items: serialized });
-    }
+    await this.postAssets();
+    await this.postLoadingState(false, `Updated ${new Date().toLocaleTimeString()}`);
 
     const callbacks = this.afterRefreshQueue.splice(0, this.afterRefreshQueue.length);
     for (const callback of callbacks) {
       await callback(items);
     }
+  }
+
+  private async postAssets(): Promise<void> {
+    if (!this.view) return;
+
+    const serialized: WebviewAssetItem[] = this.cachedItems.map((item) => {
+      const normalizedAbsPath = normalizePath(item.absPath);
+      const previewUri = previewUriForItem(this.view!.webview, item);
+      const lottieJson = item.formatFamily === 'lottie' ? readSmallTextFile(normalizedAbsPath) : null;
+      return {
+        ...toWebviewAssetItem(item, previewUri, lottieJson),
+        imageInfo: this.infoCache.get(normalizedAbsPath)
+      };
+    });
+
+    await this.view.webview.postMessage({ type: 'assets', items: serialized });
+  }
+
+  private async postLoadingState(loading: boolean, message: string): Promise<void> {
+    await this.view?.webview.postMessage({ type: 'loadingState', loading, message });
   }
 
   private buildDuplicateIndex(items: GalleryAssetItem[]): Map<PlatformType, Map<string, GalleryAssetItem[]>> {
@@ -184,14 +201,16 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
         }
       );
 
-      if (!picked?.item) {
-        return;
-      }
+      if (!picked?.item) return;
       selected = picked.item;
     }
 
     const choice = await vscode.window.showWarningMessage(
-      `检测到重复图片（同平台 ${createdItem.platform}）\n新图：${absPath}\n命中：${selected.absPath}`,
+      [
+        `检测到重复图片（同平台 ${createdItem.platform}）`,
+        `新图：${absPath}`,
+        `命中：${selected.absPath}`
+      ].join('\n'),
       { modal: true },
       '强制添加新图',
       '删除新图并定位旧图'
@@ -226,8 +245,8 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     for (const pattern of patterns) {
       const watcher = vscode.workspace.createFileSystemWatcher(pattern);
 
-      watcher.onDidCreate(async (uri) => {
-        await this.refresh(async (items) => {
+      watcher.onDidCreate((uri) => {
+        void this.refresh(async (items) => {
           await this.handleCreatedFile(uri.fsPath, items);
         });
       });
@@ -251,6 +270,35 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     const info = await extractImageInfo(normalized);
     this.infoCache.set(normalized, info);
     return info;
+  }
+
+  private htmlForWebview(webview: vscode.Webview): string {
+    const webviewDir = path.join(this.context.extensionPath, 'webview');
+    const htmlPath = path.join(webviewDir, 'index.html');
+    let html = fs.readFileSync(htmlPath, 'utf8');
+
+    for (const assetName of ['gallery.css', 'gallery.js', 'lottie-light.min.js']) {
+      const uri = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, assetName))).toString();
+      html = html.replace(`./${assetName}`, uri);
+    }
+
+    return html;
+  }
+}
+
+function previewUriForItem(webview: vscode.Webview, item: GalleryAssetItem): string | null {
+  const renderable = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'apng', 'avif', 'ico', 'lottie']);
+  if (!renderable.has(item.formatFamily)) return null;
+  return webview.asWebviewUri(vscode.Uri.file(item.absPath)).toString();
+}
+
+function readSmallTextFile(absPath: string): string | null {
+  try {
+    const stat = fs.statSync(absPath);
+    if (!stat.isFile() || stat.size > 2 * 1024 * 1024) return null;
+    return fs.readFileSync(absPath, 'utf8');
+  } catch {
+    return null;
   }
 }
 
@@ -325,7 +373,7 @@ async function extractImageInfo(absPath: string): Promise<ImageInfo> {
             ? compressionMode
             : String(exif?.image?.Compression ?? 'Unknown');
       } catch {
-        // ignore
+        // ignore malformed EXIF
       }
     }
 
@@ -357,8 +405,7 @@ async function openResourceByPath(absPath: string): Promise<void> {
 
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new ImageGalleryViewProvider(context);
-
-  void provider.refresh();
+  provider.start();
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ImageGalleryViewProvider.viewId, provider),

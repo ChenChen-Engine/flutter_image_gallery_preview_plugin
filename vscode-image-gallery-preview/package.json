@@ -2,7 +2,7 @@
   "name": "vscode-image-gallery-preview",
   "displayName": "Image Gallery Preview",
   "description": "Preview Android resources and Flutter assets in a VSCode side panel.",
-  "version": "0.0.2",
+  "version": "0.0.4",
   "publisher": "yourorg",
   "engines": {
     "vscode": "^1.95.0"
@@ -56,7 +56,8 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "sync-web": "node ./scripts/sync-web.js",
+    "compile": "npm run sync-web && tsc -p ./",
     "watch": "tsc -watch -p ./",
     "prepackage": "npm run compile",
     "package": "node ./scripts/package.js",
@@ -78,6 +79,7 @@
   "dependencies": {
     "exif-reader": "^2.0.3",
     "js-yaml": "^4.1.0",
+    "lottie-web": "^5.13.0",
     "sharp": "^0.34.5"
   }
 }
