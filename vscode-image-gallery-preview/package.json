@@ -1,0 +1,83 @@
+{
+  "name": "vscode-image-gallery-preview",
+  "displayName": "Image Gallery Preview",
+  "description": "Preview Android resources and Flutter assets in a VSCode side panel.",
+  "version": "0.0.2",
+  "publisher": "yourorg",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:imageGalleryPreview.view",
+    "onCommand:imageGalleryPreview.refresh",
+    "onCommand:imageGalleryPreview.openResource",
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "imageGalleryPreview",
+          "title": "Image Gallery",
+          "icon": "resources/gallery.svg"
+        }
+      ]
+    },
+    "views": {
+      "imageGalleryPreview": [
+        {
+          "id": "imageGalleryPreview.view",
+          "name": "Gallery"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "imageGalleryPreview.refresh",
+        "title": "Image Gallery Preview: Refresh"
+      },
+      {
+        "command": "imageGalleryPreview.openResource",
+        "title": "Image Gallery Preview: Open Resource"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "imageGalleryPreview.refresh",
+          "when": "view == imageGalleryPreview.view",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "prepackage": "npm run compile",
+    "package": "node ./scripts/package.js",
+    "test": "node ./dist/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.10.1",
+    "@types/vscode": "^1.95.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "glob": "^10.4.5",
+    "mocha": "^10.8.2",
+    "typescript": "^5.7.2",
+    "vsce": "^2.15.0"
+  },
+  "dependencies": {
+    "exif-reader": "^2.0.3",
+    "js-yaml": "^4.1.0",
+    "sharp": "^0.34.5"
+  }
+}

@@ -1,0 +1,28 @@
+<idea-plugin>
+    <id>com.yourorg.imagegallerypreview</id>
+    <name>Image Gallery Preview</name>
+    <vendor email="dev@yourorg.local">YourOrg</vendor>
+
+    <description>
+        Preview Android, Flutter, and iOS image resources with grouping, filters, and copy interactions.
+    </description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+                id="ImageGalleryPreview"
+                anchor="right"
+                factoryClass="com.yourorg.imagegallerypreview.ui.ImageGalleryToolWindowFactory"
+                icon="AllIcons.FileTypes.Image"/>
+        <postStartupActivity implementation="com.yourorg.imagegallerypreview.startup.GalleryStartupActivity"/>
+    </extensions>
+
+    <actions>
+        <action id="ImageGalleryPreview.Refresh"
+                class="com.yourorg.imagegallerypreview.actions.RefreshGalleryAction"
+                text="Refresh Image Gallery Preview"
+                description="Refresh scanned assets"/>
+    </actions>
+</idea-plugin>
+

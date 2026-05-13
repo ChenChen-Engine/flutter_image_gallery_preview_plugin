@@ -1,0 +1,24 @@
+﻿*.iml
+.idea/
+.DS_Store
+
+# IntelliJ plugin build
+intellij-image-gallery-preview/.gradle/
+intellij-image-gallery-preview/build/
+intellij-image-gallery-preview/.intellijPlatform/
+intellij-image-gallery-preview/.kotlin/
+intellij-image-gallery-preview/local.properties
+
+# VSCode extension build
+vscode-image-gallery-preview/node_modules/
+vscode-image-gallery-preview/dist/
+vscode-image-gallery-preview/.vscode-test/
+
+# Artifacts
+*/output/*.zip
+*/output/*.vsix
+
+# Local mirrors and temp probes
+.tools/local-m2/
+__patch_probe.txt
+__patch_test2.txt
