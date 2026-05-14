@@ -92,6 +92,16 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (message?.type === 'reveal' && typeof message.absPath === 'string') {
+      await revealResourceByPath(message.absPath);
+      return;
+    }
+
+    if (message?.type === 'showInSystem' && typeof message.absPath === 'string') {
+      await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(message.absPath));
+      return;
+    }
+
     if (message?.type === 'copy' && typeof message.value === 'string') {
       const label = typeof message.label === 'string' ? message.label : '内容';
       await vscode.env.clipboard.writeText(message.value);
@@ -121,12 +131,13 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const rootPath = vscode.workspace.workspaceFolders[0].uri.fsPath;
-    const items = scanAssets(rootPath).map((item) => ({
-      ...item,
-      absPath: normalizePath(item.absPath),
-      relPath: normalizePath(item.relPath)
-    }));
+    const items = vscode.workspace.workspaceFolders.flatMap((folder) =>
+      scanAssets(folder.uri.fsPath).map((item) => ({
+        ...item,
+        absPath: normalizePath(item.absPath),
+        relPath: normalizePath(item.relPath)
+      }))
+    );
 
     this.cachedItems = items;
     this.duplicateIndex = this.buildDuplicateIndex(items);
@@ -220,7 +231,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
     try {
       await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { recursive: false, useTrash: false });
-      await openResourceByPath(selected.absPath);
+      await revealResourceByPath(selected.absPath);
       await this.refresh();
     } catch {
       await vscode.window.showErrorMessage(`无法删除新图片，请手动处理：${absPath}`);
@@ -401,6 +412,11 @@ async function openResourceByPath(absPath: string): Promise<void> {
   await vscode.commands.executeCommand('vscode.open', uri, {
     preview: false
   });
+}
+
+async function revealResourceByPath(absPath: string): Promise<void> {
+  await openResourceByPath(absPath);
+  await vscode.commands.executeCommand('workbench.files.action.showActiveFileInExplorer');
 }
 
 export function activate(context: vscode.ExtensionContext): void {

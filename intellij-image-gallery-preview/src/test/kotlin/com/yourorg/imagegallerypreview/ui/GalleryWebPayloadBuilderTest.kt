@@ -27,21 +27,31 @@ class GalleryWebPayloadBuilderTest {
 
         assertEquals("R.drawable.icon", webItem.copyToken)
         assertEquals("android", webItem.platform)
+        assertEquals("android", webItem.workspaceKind)
         assertEquals("demo", webItem.projectName)
+        assertEquals("C:/demo", webItem.projectPath)
+        assertEquals(true, webItem.isPrimaryProject)
         assertEquals("app", webItem.moduleName)
+        assertEquals(true, webItem.isPrimaryModule)
         assertEquals("res/drawable", webItem.groupPath)
+        assertEquals(false, webItem.isAnimated)
     }
 
     private fun asset(formatFamily: String, absPath: String): GalleryAssetItem {
         return GalleryAssetItem(
             sourceType = SourceType.ANDROID_RES,
             platform = "android",
+            workspaceKind = "android",
             projectName = "demo",
+            projectPath = "C:/demo",
+            isPrimaryProject = true,
             moduleName = "app",
+            isPrimaryModule = true,
             groupPath = "res/drawable",
             copyToken = "R.drawable.icon",
             md5 = "abc123",
             formatFamily = formatFamily,
+            isAnimated = formatFamily == "lottie" || formatFamily == "gif",
             absPath = absPath,
             relPath = "app/src/main/res/drawable/icon.png",
             format = formatFamily,

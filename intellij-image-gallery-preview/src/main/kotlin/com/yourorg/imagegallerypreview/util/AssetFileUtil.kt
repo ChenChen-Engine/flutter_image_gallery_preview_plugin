@@ -35,6 +35,14 @@ object AssetFileUtil {
 
     fun isSupportedFamily(formatFamily: String): Boolean = formatFamily != "other"
 
+    fun isAnimated(file: File, formatFamily: String): Boolean {
+        return when (formatFamily) {
+            "gif", "apng", "lottie" -> true
+            "webp" -> isAnimatedWebp(file)
+            else -> false
+        }
+    }
+
     fun readImageSize(file: File, formatFamily: String): Pair<Int, Int>? {
         return when (formatFamily) {
             "svg" -> readSvgSize(file)
@@ -219,6 +227,16 @@ object AssetFileUtil {
             if (fileExtension(file) != "json") return false
             val text = readUtf8(file)
             text.contains("\"layers\"") && text.contains("\"v\"") && text.contains("\"w\"") && text.contains("\"h\"")
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun isAnimatedWebp(file: File): Boolean {
+        return try {
+            val bytes = Files.readAllBytes(file.toPath())
+            val text = bytes.toString(StandardCharsets.ISO_8859_1)
+            text.contains("ANMF")
         } catch (_: Throwable) {
             false
         }

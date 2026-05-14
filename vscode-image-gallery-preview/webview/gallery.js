@@ -1,6 +1,7 @@
 (() => {
   const BATCH_SIZE = 160;
   const SCROLL_THRESHOLD = 720;
+  const MAX_ACTIVE_ANIMATIONS = 8;
 
   const bridge = (() => {
     if (typeof acquireVsCodeApi === 'function') {
@@ -45,6 +46,10 @@
     infoContent: document.getElementById('infoContent')
   };
 
+  const contextMenu = document.createElement('div');
+  contextMenu.className = 'context-menu hidden';
+  document.body.appendChild(contextMenu);
+
   const state = {
     all: [],
     filtered: [],
@@ -57,8 +62,14 @@
     loading: true,
     collapsed: new Set(loadCollapsedKeys()),
     sectionNodes: new Map(),
+    groupCounts: new Map(),
     infoByPath: new Map(),
     currentInfoPath: null,
+    contextItem: null,
+    animatedRegistry: new Map(),
+    animationObserver: null,
+    animationSequence: 0,
+    animationUpdateTimer: 0,
     filterTimer: 0,
     scrollTimer: 0,
     toastTimer: 0
@@ -159,7 +170,9 @@
   }
 
   function replaceOptions(select, allLabel, values, currentValue) {
-    const safeCurrent = values.includes(currentValue) ? currentValue : 'all';
+    const descriptors = values.map((value) => typeof value === 'string' ? { value, label: value, primary: false } : value);
+    const rawValues = descriptors.map((option) => option.value);
+    const safeCurrent = rawValues.includes(currentValue) ? currentValue : 'all';
     select.innerHTML = '';
 
     const allOption = document.createElement('option');
@@ -167,10 +180,10 @@
     allOption.textContent = allLabel;
     select.appendChild(allOption);
 
-    for (const value of values) {
+    for (const descriptor of descriptors) {
       const option = document.createElement('option');
-      option.value = value;
-      option.textContent = value;
+      option.value = descriptor.value;
+      option.textContent = descriptor.label || descriptor.value;
       select.appendChild(option);
     }
 
@@ -180,13 +193,47 @@
 
   function updateFilterOptions() {
     const platformItems = itemsForSelectedPlatform();
-    state.projectName = replaceOptions(elements.project, 'All Projects', uniqueSorted(platformItems, (item) => item.projectName), state.projectName);
+    state.projectName = replaceOptions(elements.project, 'All Projects', projectOptions(platformItems), state.projectName);
 
     const projectItems = itemsForSelectedProject();
-    state.moduleName = replaceOptions(elements.module, 'All Modules', uniqueSorted(projectItems, (item) => item.moduleName), state.moduleName);
+    state.moduleName = replaceOptions(elements.module, 'All Modules', moduleOptions(projectItems), state.moduleName);
 
     state.type = replaceOptions(elements.type, 'All Types', uniqueSorted(state.all, (item) => item.formatFamily), state.type);
     updateFilterVisibility();
+  }
+
+  function projectOptions(items) {
+    const byName = new Map();
+    for (const item of items) {
+      if (!item.projectName) continue;
+      const current = byName.get(item.projectName) || { value: item.projectName, primary: false };
+      current.primary = current.primary || !!item.isPrimaryProject;
+      byName.set(item.projectName, current);
+    }
+    return [...byName.values()]
+      .sort((left, right) => Number(right.primary) - Number(left.primary) || left.value.localeCompare(right.value))
+      .map((entry) => ({
+        value: entry.value,
+        label: entry.primary ? `${entry.value}（主项目）` : entry.value,
+        primary: entry.primary
+      }));
+  }
+
+  function moduleOptions(items) {
+    const byName = new Map();
+    for (const item of items) {
+      if (!item.moduleName) continue;
+      const current = byName.get(item.moduleName) || { value: item.moduleName, primary: false };
+      current.primary = current.primary || !!item.isPrimaryModule || item.moduleName.toLowerCase() === 'app';
+      byName.set(item.moduleName, current);
+    }
+    return [...byName.values()]
+      .sort((left, right) => Number(right.primary) - Number(left.primary) || left.value.localeCompare(right.value))
+      .map((entry) => ({
+        value: entry.value,
+        label: entry.primary ? `${entry.value}（主模块）` : entry.value,
+        primary: entry.primary
+      }));
   }
 
   function updateFilterVisibility() {
@@ -228,9 +275,12 @@
   }
 
   function resetRender() {
+    clearManagedAnimations();
+    hideContextMenu();
     state.filtered = filteredItems();
     state.rendered = 0;
     state.sectionNodes.clear();
+    rebuildGroupCounts();
     elements.root.replaceChildren();
 
     if (!state.filtered.length) {
@@ -266,6 +316,7 @@
       }
       state.rendered = end;
       updateStatus();
+      scheduleAnimationUpdate();
       if (isNearBottom()) {
         window.setTimeout(appendNextBatch, 0);
       }
@@ -280,18 +331,19 @@
     const existing = state.sectionNodes.get(key);
     if (existing) return existing;
 
+    const isPlatform = level === 'platform';
     const section = document.createElement('section');
     section.className = `section ${className}`;
     section.dataset.key = key;
-    section.classList.toggle('collapsed', state.collapsed.has(key));
+    section.classList.toggle('collapsed', !isPlatform && state.collapsed.has(key));
 
-    const header = document.createElement('button');
-    header.type = 'button';
+    const header = document.createElement(isPlatform ? 'div' : 'button');
+    if (!isPlatform) header.type = 'button';
     header.className = 'section-header';
 
     const toggle = document.createElement('span');
     toggle.className = 'group-toggle';
-    toggle.textContent = state.collapsed.has(key) ? '▶' : '▼';
+    toggle.textContent = isPlatform ? '◆' : (state.collapsed.has(key) ? '▶' : '▼');
 
     const label = document.createElement('span');
     label.className = 'section-title';
@@ -304,16 +356,19 @@
     header.appendChild(toggle);
     header.appendChild(label);
     header.appendChild(count);
-    header.addEventListener('click', () => {
-      if (state.collapsed.has(key)) {
-        state.collapsed.delete(key);
-      } else {
-        state.collapsed.add(key);
-      }
-      saveCollapsedKeys();
-      section.classList.toggle('collapsed', state.collapsed.has(key));
-      toggle.textContent = state.collapsed.has(key) ? '▶' : '▼';
-    });
+    if (!isPlatform) {
+      header.addEventListener('click', () => {
+        if (state.collapsed.has(key)) {
+          state.collapsed.delete(key);
+        } else {
+          state.collapsed.add(key);
+        }
+        saveCollapsedKeys();
+        section.classList.toggle('collapsed', state.collapsed.has(key));
+        toggle.textContent = state.collapsed.has(key) ? '▶' : '▼';
+        scheduleAnimationUpdate();
+      });
+    }
 
     const body = document.createElement('div');
     body.className = 'section-body';
@@ -326,8 +381,24 @@
     return node;
   }
 
-  function countFor(predicate) {
-    return state.filtered.filter(predicate).length;
+  function rebuildGroupCounts() {
+    state.groupCounts.clear();
+    for (const item of state.filtered) {
+      const directory = normalizedGroupPath(item.groupPath);
+      const keys = [
+        sectionKey('platform', [item.platform]),
+        sectionKey('project', [item.platform, item.projectName]),
+        sectionKey('module', [item.platform, item.projectName, item.moduleName]),
+        sectionKey('directory', [item.platform, item.projectName, item.moduleName, directory])
+      ];
+      for (const key of keys) {
+        state.groupCounts.set(key, (state.groupCounts.get(key) || 0) + 1);
+      }
+    }
+  }
+
+  function groupCount(key) {
+    return state.groupCounts.get(key) || 0;
   }
 
   function ensureDirectoryNode(item) {
@@ -335,7 +406,7 @@
     const platformNode = ensureSection(
       'platform',
       platformLabel(item.platform),
-      countFor((candidate) => candidate.platform === item.platform),
+      groupCount(platformKey),
       elements.root,
       platformKey,
       'platform'
@@ -345,7 +416,7 @@
     const projectNode = ensureSection(
       'project',
       item.projectName || 'Unknown Project',
-      countFor((candidate) => candidate.platform === item.platform && candidate.projectName === item.projectName),
+      groupCount(projectKey),
       platformNode.body,
       projectKey,
       'project'
@@ -355,7 +426,7 @@
     const moduleNode = ensureSection(
       'module',
       item.moduleName || 'Unknown Module',
-      countFor((candidate) => candidate.platform === item.platform && candidate.projectName === item.projectName && candidate.moduleName === item.moduleName),
+      groupCount(moduleKey),
       projectNode.body,
       moduleKey,
       'module'
@@ -366,12 +437,7 @@
     const directoryNode = ensureSection(
       'directory',
       directory,
-      countFor((candidate) =>
-        candidate.platform === item.platform &&
-        candidate.projectName === item.projectName &&
-        candidate.moduleName === item.moduleName &&
-        normalizedGroupPath(candidate.groupPath) === directory
-      ),
+      groupCount(directoryKey),
       moduleNode.body,
       directoryKey,
       'directory'
@@ -390,6 +456,15 @@
     const tile = document.createElement('figure');
     tile.className = 'tile';
     tile.dataset.search = `${fileNameOf(item).toLowerCase()} ${String(item.md5 || '').toLowerCase()}`;
+    tile.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      showContextMenu(item, event.clientX, event.clientY);
+    });
+    tile.addEventListener('dblclick', (event) => {
+      if (event.target.closest('.corner-button, .open-button')) return;
+      event.preventDefault();
+      post('reveal', { absPath: item.absPath });
+    });
 
     const thumbWrap = document.createElement('div');
     thumbWrap.className = 'thumb-wrap';
@@ -398,7 +473,18 @@
     thumbButton.type = 'button';
     thumbButton.className = 'thumb-button';
     thumbButton.title = `点击复制: ${item.copyToken}`;
-    thumbButton.addEventListener('click', () => copyValue('路径', item.copyToken));
+    let clickTimer = 0;
+    thumbButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      window.clearTimeout(clickTimer);
+      clickTimer = window.setTimeout(() => copyValue('路径', item.copyToken), 220);
+    });
+    thumbButton.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      window.clearTimeout(clickTimer);
+      post('reveal', { absPath: item.absPath });
+    });
 
     appendPreview(thumbButton, item);
 
@@ -460,6 +546,11 @@
   }
 
   function appendPreview(container, item) {
+    if (item.isAnimated && ((item.renderKind === 'image' && item.previewSrc) || item.renderKind === 'lottie')) {
+      registerManagedAnimation(container, item);
+      return;
+    }
+
     if (item.renderKind === 'image' && item.previewSrc) {
       const image = document.createElement('img');
       image.className = 'thumb-img';
@@ -486,7 +577,7 @@
     try {
       if (!window.lottie) {
         showFailedPreview(host.parentElement || host, item, 'Lottie unavailable');
-        return;
+        return null;
       }
 
       const config = {
@@ -502,10 +593,204 @@
         config.path = item.previewSrc;
       }
 
-      window.lottie.loadAnimation(config);
+      return window.lottie.loadAnimation(config);
     } catch {
       showFailedPreview(host.parentElement || host, item);
+      return null;
     }
+  }
+
+  function registerManagedAnimation(container, item) {
+    const id = `${item.absPath || item.relPath || 'animated'}#${state.animationSequence++}`;
+    const record = {
+      id,
+      item,
+      container,
+      visible: false,
+      active: false,
+      priority: 0,
+      sequence: state.animationSequence++,
+      lottieInstance: null,
+      failed: false
+    };
+
+    container.dataset.animationId = id;
+    state.animatedRegistry.set(id, record);
+    showAnimatedPlaceholder(container, item);
+    ensureAnimationObserver().observe(container);
+
+    const promote = () => {
+      record.priority = 2;
+      record.sequence = state.animationSequence++;
+      scheduleAnimationUpdate();
+    };
+    const demote = () => {
+      record.priority = 0;
+      scheduleAnimationUpdate();
+    };
+
+    container.addEventListener('mouseenter', promote);
+    container.addEventListener('focus', promote);
+    container.addEventListener('mouseleave', demote);
+    container.addEventListener('blur', demote);
+  }
+
+  function ensureAnimationObserver() {
+    if (state.animationObserver) return state.animationObserver;
+
+    if (typeof IntersectionObserver !== 'function') {
+      state.animationObserver = {
+        observe(target) {
+          const id = target.dataset.animationId;
+          const record = id ? state.animatedRegistry.get(id) : null;
+          if (record) {
+            record.visible = true;
+            scheduleAnimationUpdate();
+          }
+        },
+        disconnect() {}
+      };
+      return state.animationObserver;
+    }
+
+    state.animationObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const id = entry.target.dataset.animationId;
+        const record = id ? state.animatedRegistry.get(id) : null;
+        if (record) {
+          record.visible = entry.isIntersecting;
+          if (entry.isIntersecting) {
+            record.sequence = state.animationSequence++;
+          }
+        }
+      }
+      scheduleAnimationUpdate();
+    }, {
+      root: null,
+      rootMargin: '260px 0px',
+      threshold: 0.01
+    });
+
+    return state.animationObserver;
+  }
+
+  function scheduleAnimationUpdate() {
+    if (state.animationUpdateTimer) return;
+    state.animationUpdateTimer = window.requestAnimationFrame(() => {
+      state.animationUpdateTimer = 0;
+      updateActiveAnimations();
+    });
+  }
+
+  function updateActiveAnimations() {
+    if (!state.animatedRegistry.size) return;
+
+    const candidates = [...state.animatedRegistry.values()]
+      .filter((record) => !record.failed && isElementDisplayable(record.container) && (record.visible || record.priority > 0))
+      .sort((left, right) => (
+        right.priority - left.priority ||
+        right.sequence - left.sequence
+      ));
+    const activeIds = new Set(candidates.slice(0, MAX_ACTIVE_ANIMATIONS).map((record) => record.id));
+
+    for (const record of state.animatedRegistry.values()) {
+      if (activeIds.has(record.id)) {
+        activateManagedAnimation(record);
+      } else {
+        deactivateManagedAnimation(record);
+      }
+    }
+  }
+
+  function isElementDisplayable(element) {
+    return !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length);
+  }
+
+  function activateManagedAnimation(record) {
+    if (record.active || record.failed) return;
+    record.active = true;
+    const item = record.item;
+
+    if (item.renderKind === 'image' && item.previewSrc) {
+      const image = document.createElement('img');
+      image.className = 'thumb-img';
+      image.alt = fileNameOf(item);
+      image.decoding = 'async';
+      image.src = item.previewSrc;
+      image.addEventListener('error', () => {
+        record.failed = true;
+        record.active = false;
+        showFailedPreview(record.container, item);
+      }, { once: true });
+      record.container.replaceChildren(image);
+      return;
+    }
+
+    if (item.renderKind === 'lottie' && (item.previewSrc || item.lottieJson)) {
+      const host = document.createElement('div');
+      host.className = 'lottie-host';
+      record.container.replaceChildren(host);
+      record.lottieInstance = renderLottie(host, item);
+      if (!record.lottieInstance) {
+        record.failed = true;
+        record.active = false;
+      }
+      return;
+    }
+
+    showPlaceholder(record.container, item);
+  }
+
+  function deactivateManagedAnimation(record) {
+    if (!record.active) return;
+    record.active = false;
+    if (record.lottieInstance && typeof record.lottieInstance.destroy === 'function') {
+      try {
+        record.lottieInstance.destroy();
+      } catch {
+        // ignore animation teardown failures
+      }
+    }
+    record.lottieInstance = null;
+    if (!record.failed) {
+      showAnimatedPlaceholder(record.container, record.item);
+    }
+  }
+
+  function clearManagedAnimations() {
+    if (state.animationUpdateTimer) {
+      window.cancelAnimationFrame(state.animationUpdateTimer);
+      state.animationUpdateTimer = 0;
+    }
+    if (state.animationObserver) {
+      state.animationObserver.disconnect();
+      state.animationObserver = null;
+    }
+    for (const record of state.animatedRegistry.values()) {
+      if (record.lottieInstance && typeof record.lottieInstance.destroy === 'function') {
+        try {
+          record.lottieInstance.destroy();
+        } catch {
+          // ignore animation teardown failures
+        }
+      }
+    }
+    state.animatedRegistry.clear();
+  }
+
+  function showAnimatedPlaceholder(container, item) {
+    container.replaceChildren();
+    const placeholder = document.createElement('div');
+    placeholder.className = 'animated-placeholder';
+    const format = String(item.formatFamily || item.format || 'ANIM').toUpperCase();
+    const play = document.createElement('span');
+    play.className = 'animated-play';
+    play.textContent = '▶';
+    const label = document.createElement('span');
+    label.textContent = format;
+    placeholder.appendChild(play);
+    placeholder.appendChild(label);
+    container.appendChild(placeholder);
   }
 
   function showPlaceholder(container, item) {
@@ -529,6 +814,47 @@
     if (!value) return;
     post('copy', { label, value });
     showToast(`已复制${label}: ${value}`);
+  }
+
+  function showContextMenu(item, x, y) {
+    state.contextItem = item;
+    contextMenu.replaceChildren();
+
+    const actions = [
+      ['复制资源路径', () => copyValue('路径', item.copyToken)],
+      ['复制绝对路径', () => copyValue('绝对路径', item.absPath)],
+      ['复制相对路径', () => copyValue('相对路径', item.relPath)],
+      ['复制 MD5', () => copyValue('MD5', item.md5)],
+      ['打开并定位', () => post('reveal', { absPath: item.absPath })],
+      ['显示图片信息', () => showInfoModal(item)],
+      ['在系统文件管理器中显示', () => post('showInSystem', { absPath: item.absPath })]
+    ];
+
+    for (const [label, action] of actions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'context-menu-item';
+      button.textContent = label;
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        hideContextMenu();
+        action();
+      });
+      contextMenu.appendChild(button);
+    }
+
+    contextMenu.classList.remove('hidden');
+    const width = contextMenu.offsetWidth || 220;
+    const height = contextMenu.offsetHeight || 260;
+    const left = Math.min(Math.max(8, x), Math.max(8, window.innerWidth - width - 8));
+    const top = Math.min(Math.max(8, y), Math.max(8, window.innerHeight - height - 8));
+    contextMenu.style.left = `${left}px`;
+    contextMenu.style.top = `${top}px`;
+  }
+
+  function hideContextMenu() {
+    state.contextItem = null;
+    contextMenu.classList.add('hidden');
   }
 
   function fallbackInfo(item) {
@@ -611,7 +937,9 @@
   function onScroll() {
     window.clearTimeout(state.scrollTimer);
     state.scrollTimer = window.setTimeout(() => {
+      hideContextMenu();
       if (isNearBottom()) appendNextBatch();
+      scheduleAnimationUpdate();
     }, 80);
   }
 
@@ -657,9 +985,16 @@
   });
 
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeInfoModal();
+    if (event.key === 'Escape') {
+      closeInfoModal();
+      hideContextMenu();
+    }
   });
 
+  window.addEventListener('click', (event) => {
+    if (!event.target.closest('.context-menu')) hideContextMenu();
+  });
+  contextMenu.addEventListener('click', (event) => event.stopPropagation());
   window.addEventListener('scroll', onScroll, { passive: true });
   window.addEventListener('resize', onScroll, { passive: true });
 

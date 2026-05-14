@@ -15,8 +15,12 @@ suite('web payload', () => {
     assert.strictEqual(webItem.copyToken, 'R.drawable.icon');
     assert.strictEqual(webItem.platform, 'android');
     assert.strictEqual(webItem.projectName, 'demo');
+    assert.strictEqual(webItem.projectPath, 'C:/demo');
+    assert.strictEqual(webItem.isPrimaryProject, true);
     assert.strictEqual(webItem.moduleName, 'app');
+    assert.strictEqual(webItem.isPrimaryModule, true);
     assert.strictEqual(webItem.groupPath, 'res/drawable');
+    assert.strictEqual(webItem.isAnimated, false);
   });
 });
 
@@ -24,12 +28,17 @@ function asset(formatFamily: GalleryAssetItem['formatFamily']): GalleryAssetItem
   return {
     sourceType: 'android_res',
     platform: 'android',
+    workspaceKind: 'android',
     projectName: 'demo',
+    projectPath: 'C:/demo',
+    isPrimaryProject: true,
     moduleName: 'app',
+    isPrimaryModule: true,
     groupPath: 'res/drawable',
     copyToken: 'R.drawable.icon',
     md5: 'abc123',
     formatFamily,
+    isAnimated: formatFamily === 'lottie' || formatFamily === 'gif',
     absPath: 'C:/demo/app/src/main/res/drawable/icon.png',
     relPath: 'app/src/main/res/drawable/icon.png',
     format: formatFamily,

@@ -8,13 +8,23 @@ import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
-class FileSystemAssetScanner(private val root: File) : AssetScanner {
+class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
 
     private val ignoredDirs = setOf(
         ".git", ".gradle", ".idea", "build", "out", "output", "dist", "node_modules", ".dart_tool", "Pods"
     )
 
-    private val androidProjectCache = ConcurrentHashMap<File, String>()
+    private val root: File = resolveWorkspaceRoot(openedRoot.absoluteFile)
+    private val workspaceKind: String = detectWorkspaceKind(root)
+
+    private val androidProjectCache = ConcurrentHashMap<File, ProjectIdentity>()
+    private val flutterProjectCache = ConcurrentHashMap<File, ProjectIdentity?>()
+
+    private data class ProjectIdentity(
+        val name: String,
+        val path: String,
+        val isPrimary: Boolean
+    )
 
     override fun scan(): List<GalleryAssetItem> {
         if (!root.exists() || !root.isDirectory) return emptyList()
@@ -45,7 +55,7 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
 
             val moduleRoot = srcDir.parentFile ?: continue
             val moduleName = resolveModuleName(moduleRoot)
-            val projectName = resolveAndroidProjectName(moduleRoot)
+            val projectIdentity = resolveAndroidProject(moduleRoot)
 
             val bucketDirs = resDir.listFiles()?.filter {
                 it.isDirectory && (it.name.startsWith("drawable", ignoreCase = true) || it.name.startsWith("mipmap", ignoreCase = true))
@@ -68,12 +78,17 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
                     results += GalleryAssetItem(
                         sourceType = SourceType.ANDROID_RES,
                         platform = SourceType.ANDROID_RES.platform,
-                        projectName = projectName,
+                        workspaceKind = workspaceKind,
+                        projectName = projectIdentity.name,
+                        projectPath = projectIdentity.path,
+                        isPrimaryProject = projectIdentity.isPrimary,
                         moduleName = moduleName,
+                        isPrimaryModule = isPrimaryModule(moduleName),
                         groupPath = groupPath,
                         copyToken = AssetFileUtil.androidCopyToken(bucketName, file),
                         md5 = AssetFileUtil.md5Hex(file),
                         formatFamily = family,
+                        isAnimated = AssetFileUtil.isAnimated(file, family),
                         absPath = file.absolutePath,
                         relPath = AssetFileUtil.relativePath(root, file),
                         format = file.extension.lowercase(Locale.ROOT),
@@ -99,7 +114,7 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
         for (pubspec in pubspecs) {
             val moduleRoot = pubspec.parentFile ?: continue
             val moduleName = resolveFlutterModuleName(moduleRoot, pubspec)
-            val projectName = resolveFlutterProjectName(moduleRoot, pubspec)
+            val projectIdentity = resolveFlutterProject(moduleRoot, pubspec)
             val entries = PubspecAssetsParser.parseAssetEntries(pubspec)
 
             for (raw in entries) {
@@ -108,17 +123,17 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
 
                 val target = File(moduleRoot, entry)
                 when {
-                    target.isFile -> addFlutterFile(target, moduleRoot, projectName, moduleName, results)
+                    target.isFile -> addFlutterFile(target, moduleRoot, projectIdentity, moduleName, results)
                     target.isDirectory -> {
                         for (file in walkFiltered(target)) {
                             if (!file.isFile) continue
-                            addFlutterFile(file, moduleRoot, projectName, moduleName, results)
+                            addFlutterFile(file, moduleRoot, projectIdentity, moduleName, results)
                         }
                     }
                     else -> {
                         val wildcardFiles = resolveWildcardTargets(moduleRoot, entry)
                         for (file in wildcardFiles) {
-                            addFlutterFile(file, moduleRoot, projectName, moduleName, results)
+                            addFlutterFile(file, moduleRoot, projectIdentity, moduleName, results)
                         }
                     }
                 }
@@ -129,7 +144,7 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
     private fun addFlutterFile(
         file: File,
         moduleRoot: File,
-        projectName: String,
+        projectIdentity: ProjectIdentity,
         moduleName: String,
         results: MutableList<GalleryAssetItem>
     ) {
@@ -144,12 +159,17 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
         results += GalleryAssetItem(
             sourceType = SourceType.FLUTTER_ASSET,
             platform = SourceType.FLUTTER_ASSET.platform,
-            projectName = projectName,
+            workspaceKind = workspaceKind,
+            projectName = projectIdentity.name,
+            projectPath = projectIdentity.path,
+            isPrimaryProject = projectIdentity.isPrimary,
             moduleName = moduleName,
+            isPrimaryModule = projectIdentity.isPrimary,
             groupPath = groupPath,
             copyToken = AssetFileUtil.flutterCopyToken(moduleRoot, file),
             md5 = AssetFileUtil.md5Hex(file),
             formatFamily = family,
+            isAnimated = AssetFileUtil.isAnimated(file, family),
             absPath = file.absolutePath,
             relPath = AssetFileUtil.relativePath(root, file),
             format = file.extension.lowercase(Locale.ROOT),
@@ -162,12 +182,11 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
     }
 
     private fun scanIosAssets(results: MutableList<GalleryAssetItem>) {
-        val iosRoot = File(root, "ios")
-        if (!iosRoot.exists() || !iosRoot.isDirectory) return
-
         val seenPaths = mutableSetOf<String>()
-        scanIosXcassets(iosRoot, results, seenPaths)
-        scanIosImageFiles(iosRoot, results, seenPaths)
+        for (iosRoot in findIosRoots()) {
+            scanIosXcassets(iosRoot, results, seenPaths)
+            scanIosImageFiles(iosRoot, results, seenPaths)
+        }
     }
 
     private fun scanIosXcassets(
@@ -186,7 +205,7 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
 
             val moduleRoot = findIosModuleRoot(imageSetDir, iosRoot)
             val moduleName = resolveIosModuleName(moduleRoot)
-            val projectName = resolveIosProjectName(moduleRoot)
+            val projectIdentity = resolveIosProject(moduleRoot)
 
             for (fileName in filenames) {
                 val candidate = File(imageSetDir, fileName)
@@ -195,7 +214,7 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
                 val normalized = AssetFileUtil.normalizePath(candidate.absolutePath)
                 if (!seenPaths.add(normalized)) continue
 
-                addIosFile(candidate, moduleRoot, projectName, moduleName, results)
+                addIosFile(candidate, moduleRoot, projectIdentity, moduleName, results)
             }
         }
     }
@@ -218,15 +237,15 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
 
             val moduleRoot = findIosModuleRoot(file, iosRoot)
             val moduleName = resolveIosModuleName(moduleRoot)
-            val projectName = resolveIosProjectName(moduleRoot)
-            addIosFile(file, moduleRoot, projectName, moduleName, results, family)
+            val projectIdentity = resolveIosProject(moduleRoot)
+            addIosFile(file, moduleRoot, projectIdentity, moduleName, results, family)
         }
     }
 
     private fun addIosFile(
         file: File,
         moduleRoot: File,
-        projectName: String,
+        projectIdentity: ProjectIdentity,
         moduleName: String,
         results: MutableList<GalleryAssetItem>,
         preDetectedFamily: String? = null
@@ -242,12 +261,17 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
         results += GalleryAssetItem(
             sourceType = SourceType.IOS_ASSET,
             platform = SourceType.IOS_ASSET.platform,
-            projectName = projectName,
+            workspaceKind = workspaceKind,
+            projectName = projectIdentity.name,
+            projectPath = projectIdentity.path,
+            isPrimaryProject = projectIdentity.isPrimary,
             moduleName = moduleName,
+            isPrimaryModule = projectIdentity.isPrimary && moduleName.equals("Runner", ignoreCase = true),
             groupPath = groupPath,
             copyToken = AssetFileUtil.iosCopyToken(moduleRoot, file),
             md5 = AssetFileUtil.md5Hex(file),
             formatFamily = family,
+            isAnimated = AssetFileUtil.isAnimated(file, family),
             absPath = file.absolutePath,
             relPath = AssetFileUtil.relativePath(root, file),
             format = file.extension.lowercase(Locale.ROOT),
@@ -300,14 +324,29 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
         return resolveModuleName(moduleRoot)
     }
 
-    private fun resolveFlutterProjectName(moduleRoot: File, pubspec: File): String {
-        return PubspecAssetsParser.parseProjectName(pubspec).takeUnless { it.isNullOrBlank() }
+    private fun resolveFlutterProject(moduleRoot: File, pubspec: File): ProjectIdentity {
+        val name = PubspecAssetsParser.parseProjectName(pubspec).takeUnless { it.isNullOrBlank() }
             ?: moduleRoot.name.ifBlank { "flutter" }
+        return ProjectIdentity(
+            name = name,
+            path = AssetFileUtil.normalizePath(moduleRoot.absolutePath),
+            isPrimary = sameFile(moduleRoot, root)
+        )
     }
 
     private fun resolveIosModuleName(moduleRoot: File): String {
         val name = moduleRoot.nameWithoutExtension
         return if (name.isBlank()) "ios" else name
+    }
+
+    private fun resolveIosProject(moduleRoot: File): ProjectIdentity {
+        findNearestFlutterProject(moduleRoot)?.let { return it }
+
+        return ProjectIdentity(
+            name = resolveIosProjectName(moduleRoot),
+            path = AssetFileUtil.normalizePath(moduleRoot.absolutePath),
+            isPrimary = workspaceKind == "ios" && (sameFile(moduleRoot, root) || isDescendant(moduleRoot, root))
+        )
     }
 
     private fun resolveIosProjectName(moduleRoot: File): String {
@@ -322,24 +361,66 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
         return moduleRoot.parentFile?.name?.takeIf { it.isNotBlank() } ?: moduleRoot.name
     }
 
-    private fun resolveAndroidProjectName(moduleRoot: File): String {
-        return androidProjectCache.computeIfAbsent(moduleRoot) { resolveAndroidProjectNameInternal(it) }
+    private fun resolveAndroidProject(moduleRoot: File): ProjectIdentity {
+        return androidProjectCache.computeIfAbsent(moduleRoot) { resolveAndroidProjectInternal(it) }
     }
 
-    private fun resolveAndroidProjectNameInternal(moduleRoot: File): String {
+    private fun resolveAndroidProjectInternal(moduleRoot: File): ProjectIdentity {
+        findNearestFlutterProject(moduleRoot)?.let { return it }
+
+        if (workspaceKind == "android") {
+            return ProjectIdentity(
+                name = primaryAndroidProjectName(),
+                path = AssetFileUtil.normalizePath(root.absolutePath),
+                isPrimary = true
+            )
+        }
+
         var cursor: File? = moduleRoot
         while (cursor != null) {
             if (cursor == root.parentFile) break
             val hasSettings = File(cursor, "settings.gradle").exists() || File(cursor, "settings.gradle.kts").exists()
             if (hasSettings) {
-                return cursor.name.ifBlank { "android" }
+                return ProjectIdentity(
+                    name = cursor.name.ifBlank { "android" },
+                    path = AssetFileUtil.normalizePath(cursor.absolutePath),
+                    isPrimary = sameFile(cursor, root)
+                )
             }
             if (cursor == root) {
                 break
             }
             cursor = cursor.parentFile
         }
-        return moduleRoot.parentFile?.name?.takeIf { it.isNotBlank() } ?: moduleRoot.name
+
+        return ProjectIdentity(
+            name = moduleRoot.parentFile?.name?.takeIf { it.isNotBlank() } ?: moduleRoot.name,
+            path = AssetFileUtil.normalizePath(moduleRoot.parentFile?.absolutePath ?: moduleRoot.absolutePath),
+            isPrimary = false
+        )
+    }
+
+    private fun findNearestFlutterProject(start: File): ProjectIdentity? {
+        return flutterProjectCache.computeIfAbsent(start.absoluteFile) {
+            var cursor: File? = if (start.isDirectory) start else start.parentFile
+            while (cursor != null && isDescendantOrSame(cursor, root)) {
+                val pubspec = File(cursor, "pubspec.yaml")
+                if (pubspec.exists() && pubspec.isFile) {
+                    return@computeIfAbsent resolveFlutterProject(cursor, pubspec)
+                }
+                if (sameFile(cursor, root)) break
+                cursor = cursor.parentFile
+            }
+            null
+        }
+    }
+
+    private fun primaryAndroidProjectName(): String {
+        return if (File(root, "app").exists()) "app" else root.name.ifBlank { "app" }
+    }
+
+    private fun isPrimaryModule(moduleName: String): Boolean {
+        return moduleName.equals("app", ignoreCase = true)
     }
 
     private fun normalizeAssetEntry(raw: String): String {
@@ -373,6 +454,22 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
         return files
     }
 
+    private fun findIosRoots(): List<File> {
+        val roots = linkedSetOf<File>()
+        if (root.name.equals("ios", ignoreCase = true)) {
+            roots += root
+        }
+        for (candidate in walkFiltered(root)) {
+            if (candidate.isDirectory && candidate.name.equals("ios", ignoreCase = true)) {
+                roots += candidate
+            }
+        }
+        if (workspaceKind == "ios" && roots.isEmpty()) {
+            roots += root
+        }
+        return roots.toList()
+    }
+
     private fun walkFiltered(start: File): Sequence<File> {
         return start.walkTopDown().onEnter { dir -> !shouldSkipDirectory(dir) }
     }
@@ -381,6 +478,63 @@ class FileSystemAssetScanner(private val root: File) : AssetScanner {
         if (!dir.isDirectory) return false
         if (dir == root) return false
         return dir.name in ignoredDirs
+    }
+
+    private fun resolveWorkspaceRoot(openedRoot: File): File {
+        var cursor: File? = if (openedRoot.isDirectory) openedRoot else openedRoot.parentFile
+        while (cursor != null) {
+            val pubspec = File(cursor, "pubspec.yaml")
+            if (pubspec.exists() && pubspec.isFile) return cursor
+            cursor = cursor.parentFile
+        }
+        return openedRoot
+    }
+
+    private fun detectWorkspaceKind(root: File): String {
+        if (File(root, "pubspec.yaml").exists()) return "flutter"
+        if (File(root, "settings.gradle").exists() || File(root, "settings.gradle.kts").exists()) return "android"
+        if (containsAndroidResources(root)) return "android"
+        if (root.name.equals("ios", ignoreCase = true) || containsXcodeProject(root)) return "ios"
+        return "unknown"
+    }
+
+    private fun containsXcodeProject(start: File): Boolean {
+        return try {
+            walkFiltered(start).any { it.name.endsWith(".xcodeproj", ignoreCase = true) }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun containsAndroidResources(start: File): Boolean {
+        return try {
+            walkFiltered(start).any {
+                val path = AssetFileUtil.normalizePath(it.absolutePath).lowercase(Locale.ROOT)
+                path.contains("/src/") && (path.contains("/res/drawable") || path.contains("/res/mipmap"))
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun sameFile(left: File, right: File): Boolean {
+        return try {
+            left.canonicalFile == right.canonicalFile
+        } catch (_: Throwable) {
+            left.absoluteFile == right.absoluteFile
+        }
+    }
+
+    private fun isDescendant(child: File, parent: File): Boolean {
+        return isDescendantOrSame(child, parent) && !sameFile(child, parent)
+    }
+
+    private fun isDescendantOrSame(child: File, parent: File): Boolean {
+        return try {
+            child.canonicalFile.toPath().startsWith(parent.canonicalFile.toPath())
+        } catch (_: Throwable) {
+            AssetFileUtil.normalizePath(child.absolutePath).startsWith(AssetFileUtil.normalizePath(parent.absolutePath))
+        }
     }
 }
 

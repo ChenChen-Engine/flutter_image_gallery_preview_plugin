@@ -40,7 +40,14 @@ class FileSystemAssetScannerTest {
         val items = FileSystemAssetScanner(root).scan().filter { it.sourceType == SourceType.ANDROID_RES }
 
         assertEquals(3, items.size)
-        assertTrue(items.any { it.projectName == root.name && it.moduleName == "app" && it.copyToken == "R.drawable.icon" })
+        assertTrue(items.any {
+            it.workspaceKind == "android" &&
+                it.projectName == "app" &&
+                it.moduleName == "app" &&
+                it.isPrimaryProject &&
+                it.isPrimaryModule &&
+                it.copyToken == "R.drawable.icon"
+        })
         assertTrue(items.any { it.moduleName == "feature_chat" && it.qualifier == "xxhdpi" })
         assertTrue(items.any { it.copyToken == "R.mipmap.ic_launcher" && it.formatFamily == "vector_xml" })
     }
@@ -77,13 +84,54 @@ class FileSystemAssetScannerTest {
         val items = FileSystemAssetScanner(root).scan().filter { it.sourceType == SourceType.FLUTTER_ASSET }
 
         assertEquals(2, items.size)
-        assertTrue(items.any { it.projectName == "root_app" && it.moduleName == root.name && it.relPath.endsWith("assets/images/a.png") })
+        assertTrue(items.any {
+            it.workspaceKind == "flutter" &&
+                it.projectName == "root_app" &&
+                it.moduleName == root.name &&
+                it.isPrimaryProject &&
+                it.isPrimaryModule &&
+                it.relPath.endsWith("assets/images/a.png")
+        })
         assertTrue(items.any {
             it.projectName == "feature_feed" &&
                 it.moduleName == "feature_feed" &&
+                !it.isPrimaryProject &&
                 it.relPath.endsWith("modules/feature_feed/res/images/b.webp") &&
                 it.copyToken.endsWith("res/images/b.webp")
         })
+    }
+
+    @Test
+    fun `scan flutter workspace android and ios resources from root and nested projects`() {
+        val root = createTempDirectory("igp-test-flutter-platforms").toFile()
+
+        File(root, "pubspec.yaml").writeText("name: root_app\nflutter:\n  assets:\n    - assets/images/\n")
+        createPng(File(root, "android/app/src/main/res/drawable/root_icon.png"), 16, 16)
+        createPng(File(root, "ios/Runner/Assets.xcassets/Root.imageset/root.png"), 16, 16)
+        File(root, "ios/Runner/Assets.xcassets/Root.imageset/Contents.json").writeText(
+            """{"images":[{"filename":"root.png"}]}"""
+        )
+
+        val featureRoot = File(root, "packages/feature_one")
+        File(featureRoot, "pubspec.yaml").apply {
+            parentFile.mkdirs()
+            writeText("name: feature_one\nflutter:\n  assets:\n    - assets/\n")
+        }
+        createPng(File(featureRoot, "android/app/src/main/res/drawable/feature_icon.png"), 18, 18)
+        createPng(File(featureRoot, "ios/Runner/Assets.xcassets/Feature.imageset/feature.png"), 18, 18)
+        File(featureRoot, "ios/Runner/Assets.xcassets/Feature.imageset/Contents.json").writeText(
+            """{"images":[{"filename":"feature.png"}]}"""
+        )
+
+        val items = FileSystemAssetScanner(root).scan()
+
+        val androidItems = items.filter { it.sourceType == SourceType.ANDROID_RES }
+        val iosItems = items.filter { it.sourceType == SourceType.IOS_ASSET }
+
+        assertTrue(androidItems.any { it.projectName == "root_app" && it.isPrimaryProject && it.moduleName == "app" && it.isPrimaryModule })
+        assertTrue(androidItems.any { it.projectName == "feature_one" && !it.isPrimaryProject && it.moduleName == "app" && it.isPrimaryModule })
+        assertTrue(iosItems.any { it.projectName == "root_app" && it.isPrimaryProject && it.relPath.endsWith("root.png") })
+        assertTrue(iosItems.any { it.projectName == "feature_one" && !it.isPrimaryProject && it.relPath.endsWith("feature.png") })
     }
 
     @Test
@@ -120,6 +168,7 @@ class FileSystemAssetScannerTest {
         assertNotNull(banner)
         assertEquals("Runner", banner.moduleName)
         assertEquals(root.name, banner.projectName)
+        assertEquals("ios", banner.workspaceKind)
     }
 
     @Test
@@ -153,6 +202,7 @@ class FileSystemAssetScannerTest {
 
         assertEquals(1, items.size)
         assertEquals("lottie", items.first().formatFamily)
+        assertTrue(items.first().isAnimated)
     }
 
     private fun createPng(file: File, width: Int, height: Int) {

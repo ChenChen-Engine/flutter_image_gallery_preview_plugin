@@ -83,6 +83,98 @@ function parseFlutterProjectName(pubspecPath: string): string | null {
   return typeof doc?.name === 'string' && doc.name.trim() ? doc.name.trim() : null;
 }
 
+interface ProjectIdentity {
+  name: string;
+  path: string;
+  isPrimary: boolean;
+}
+
+function samePath(left: string, right: string): boolean {
+  return normalizePath(path.resolve(left)).toLowerCase() === normalizePath(path.resolve(right)).toLowerCase();
+}
+
+function isDescendantOrSame(child: string, parent: string): boolean {
+  const relative = normalizePath(path.relative(parent, child));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function findNearestPubspecRoot(start: string, root: string): string | null {
+  let cursor = fs.existsSync(start) && fs.statSync(start).isDirectory() ? start : path.dirname(start);
+  while (cursor && isDescendantOrSame(cursor, root)) {
+    const pubspec = path.join(cursor, 'pubspec.yaml');
+    if (fs.existsSync(pubspec) && fs.statSync(pubspec).isFile()) return cursor;
+    if (samePath(cursor, root)) break;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return null;
+}
+
+function resolveWorkspaceRoot(openedRoot: string): string {
+  let cursor = fs.existsSync(openedRoot) && fs.statSync(openedRoot).isDirectory() ? openedRoot : path.dirname(openedRoot);
+  while (cursor) {
+    const pubspec = path.join(cursor, 'pubspec.yaml');
+    if (fs.existsSync(pubspec) && fs.statSync(pubspec).isFile()) return cursor;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return openedRoot;
+}
+
+function containsXcodeProject(root: string): boolean {
+  const stack = [root];
+  while (stack.length) {
+    const current = stack.pop()!;
+    if (shouldSkipDir(current, root)) continue;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name.toLowerCase().endsWith('.xcodeproj')) return true;
+      if (entry.isDirectory()) stack.push(path.join(current, entry.name));
+    }
+  }
+  return false;
+}
+
+function detectWorkspaceKind(root: string): GalleryAssetItem['workspaceKind'] {
+  if (fs.existsSync(path.join(root, 'pubspec.yaml'))) return 'flutter';
+  if (fs.existsSync(path.join(root, 'settings.gradle')) || fs.existsSync(path.join(root, 'settings.gradle.kts'))) return 'android';
+  if (containsAndroidResources(root)) return 'android';
+  if (path.basename(root).toLowerCase() === 'ios' || containsXcodeProject(root)) return 'ios';
+  return 'unknown';
+}
+
+function containsAndroidResources(root: string): boolean {
+  let found = false;
+  walkFiles(root, (filePath) => {
+    const normalized = normalizePath(filePath).toLowerCase();
+    if (normalized.includes('/src/') && (normalized.includes('/res/drawable') || normalized.includes('/res/mipmap'))) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+function resolveFlutterProject(root: string, moduleRoot: string, pubspecPath: string): ProjectIdentity {
+  return {
+    name: parseFlutterProjectName(pubspecPath) ?? (path.basename(moduleRoot) || 'flutter'),
+    path: normalizePath(moduleRoot),
+    isPrimary: samePath(moduleRoot, root)
+  };
+}
+
+function findNearestFlutterProject(root: string, start: string): ProjectIdentity | null {
+  const pubspecRoot = findNearestPubspecRoot(start, root);
+  if (!pubspecRoot) return null;
+  return resolveFlutterProject(root, pubspecRoot, path.join(pubspecRoot, 'pubspec.yaml'));
+}
+
 function resolveModuleName(moduleRoot: string): string {
   const name = path.basename(moduleRoot);
   return name || 'root';
@@ -330,6 +422,17 @@ function readImageSize(filePath: string, formatFamily: AssetKind): { width: numb
   }
 }
 
+function isAnimated(filePath: string, formatFamily: AssetKind): boolean {
+  if (formatFamily === 'gif' || formatFamily === 'apng' || formatFamily === 'lottie') return true;
+  if (formatFamily !== 'webp') return false;
+
+  try {
+    return fs.readFileSync(filePath).includes(Buffer.from('ANMF', 'ascii'));
+  } catch {
+    return false;
+  }
+}
+
 function md5Hex(filePath: string): string {
   try {
     const content = fs.readFileSync(filePath);
@@ -384,11 +487,15 @@ function toGalleryItem(params: {
   sourceType: SourceType;
   platform: PlatformType;
   projectName: string;
+  projectPath: string;
+  isPrimaryProject: boolean;
   moduleName: string;
+  isPrimaryModule: boolean;
   groupPath: string;
   copyToken: string;
   qualifier: string;
   formatFamily: AssetKind;
+  workspaceKind: GalleryAssetItem['workspaceKind'];
 }): GalleryAssetItem {
   const stat = fs.statSync(params.filePath);
   const size = readImageSize(params.filePath, params.formatFamily);
@@ -396,12 +503,17 @@ function toGalleryItem(params: {
   return {
     sourceType: params.sourceType,
     platform: params.platform,
+    workspaceKind: params.workspaceKind,
     projectName: params.projectName,
+    projectPath: normalizePath(params.projectPath),
+    isPrimaryProject: params.isPrimaryProject,
     moduleName: params.moduleName,
+    isPrimaryModule: params.isPrimaryModule,
     groupPath: params.groupPath,
     copyToken: params.copyToken,
     md5: md5Hex(params.filePath),
     formatFamily: params.formatFamily,
+    isAnimated: isAnimated(params.filePath, params.formatFamily),
     absPath: params.filePath,
     relPath: normalizePath(path.relative(params.root, params.filePath)),
     format: extLower(params.filePath),
@@ -413,7 +525,30 @@ function toGalleryItem(params: {
   };
 }
 
-function scanAndroidRes(root: string): GalleryAssetItem[] {
+function primaryAndroidProjectName(root: string): string {
+  return fs.existsSync(path.join(root, 'app')) ? 'app' : (path.basename(root) || 'app');
+}
+
+function resolveAndroidProject(root: string, moduleRoot: string, workspaceKind: GalleryAssetItem['workspaceKind']): ProjectIdentity {
+  const flutterProject = findNearestFlutterProject(root, moduleRoot);
+  if (flutterProject) return flutterProject;
+
+  if (workspaceKind === 'android') {
+    return {
+      name: primaryAndroidProjectName(root),
+      path: normalizePath(root),
+      isPrimary: true
+    };
+  }
+
+  return {
+    name: resolveAndroidProjectName(root, moduleRoot),
+    path: normalizePath(path.dirname(moduleRoot) || moduleRoot),
+    isPrimary: samePath(moduleRoot, root)
+  };
+}
+
+function scanAndroidRes(root: string, workspaceKind: GalleryAssetItem['workspaceKind']): GalleryAssetItem[] {
   const results: GalleryAssetItem[] = [];
 
   walkFiles(root, (filePath) => {
@@ -433,7 +568,7 @@ function scanAndroidRes(root: string): GalleryAssetItem[] {
 
     const moduleRoot = normalized.slice(0, srcIndex);
     const moduleName = resolveModuleName(moduleRoot);
-    const projectName = resolveAndroidProjectName(root, moduleRoot);
+    const project = resolveAndroidProject(root, moduleRoot, workspaceKind);
     const qualifier = bucket.includes('-') ? bucket.substring(bucket.indexOf('-') + 1) : '';
     const family = detectFormatFamily(filePath, true);
     if (family === 'other') return;
@@ -446,8 +581,12 @@ function scanAndroidRes(root: string): GalleryAssetItem[] {
       filePath,
       sourceType: 'android_res',
       platform: 'android',
-      projectName,
+      workspaceKind,
+      projectName: project.name,
+      projectPath: project.path,
+      isPrimaryProject: project.isPrimary,
       moduleName,
+      isPrimaryModule: moduleName.toLowerCase() === 'app',
       groupPath,
       copyToken: androidCopyToken(bucket, filePath),
       qualifier,
@@ -482,7 +621,7 @@ function resolveWildcardTargets(moduleRoot: string, entry: string): string[] {
   return files;
 }
 
-function scanFlutterAssets(root: string): GalleryAssetItem[] {
+function scanFlutterAssets(root: string, workspaceKind: GalleryAssetItem['workspaceKind']): GalleryAssetItem[] {
   const results: GalleryAssetItem[] = [];
 
   const pubspecs: string[] = [];
@@ -495,7 +634,7 @@ function scanFlutterAssets(root: string): GalleryAssetItem[] {
   for (const pubspecPath of pubspecs) {
     const moduleRoot = path.dirname(pubspecPath);
     const moduleName = resolveFlutterModuleName(moduleRoot, pubspecPath);
-    const projectName = resolveFlutterProjectName(moduleRoot, pubspecPath);
+    const project = resolveFlutterProject(root, moduleRoot, pubspecPath);
     const entries = parseFlutterAssetEntries(pubspecPath);
 
     for (const rawEntry of entries) {
@@ -513,8 +652,12 @@ function scanFlutterAssets(root: string): GalleryAssetItem[] {
             filePath: target,
             sourceType: 'flutter_asset',
             platform: 'flutter',
-            projectName,
+            workspaceKind,
+            projectName: project.name,
+            projectPath: project.path,
+            isPrimaryProject: project.isPrimary,
             moduleName,
+            isPrimaryModule: project.isPrimary,
             groupPath,
             copyToken: flutterCopyToken(moduleRoot, target),
             qualifier: '',
@@ -536,8 +679,12 @@ function scanFlutterAssets(root: string): GalleryAssetItem[] {
             filePath,
             sourceType: 'flutter_asset',
             platform: 'flutter',
-            projectName,
+            workspaceKind,
+            projectName: project.name,
+            projectPath: project.path,
+            isPrimaryProject: project.isPrimary,
             moduleName,
+            isPrimaryModule: project.isPrimary,
             groupPath,
             copyToken: flutterCopyToken(moduleRoot, filePath),
             qualifier: '',
@@ -558,8 +705,12 @@ function scanFlutterAssets(root: string): GalleryAssetItem[] {
           filePath: wildcardFile,
           sourceType: 'flutter_asset',
           platform: 'flutter',
-          projectName,
+          workspaceKind,
+          projectName: project.name,
+          projectPath: project.path,
+          isPrimaryProject: project.isPrimary,
           moduleName,
+          isPrimaryModule: project.isPrimary,
           groupPath,
           copyToken: flutterCopyToken(moduleRoot, wildcardFile),
           qualifier: '',
@@ -606,80 +757,124 @@ function findIosModuleRoot(filePath: string, iosRoot: string): string {
   return fallback;
 }
 
-function scanIosAssets(root: string): GalleryAssetItem[] {
-  const results: GalleryAssetItem[] = [];
-  const iosRoot = path.join(root, 'ios');
-  if (!fs.existsSync(iosRoot) || !fs.statSync(iosRoot).isDirectory()) return results;
+function findIosRoots(root: string, workspaceKind: GalleryAssetItem['workspaceKind']): string[] {
+  const roots = new Set<string>();
+  if (path.basename(root).toLowerCase() === 'ios') roots.add(root);
 
+  const stack = [root];
+  while (stack.length) {
+    const current = stack.pop()!;
+    if (shouldSkipDir(current, root)) continue;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const abs = path.join(current, entry.name);
+      if (entry.name.toLowerCase() === 'ios') roots.add(abs);
+      stack.push(abs);
+    }
+  }
+
+  if (workspaceKind === 'ios' && roots.size === 0) roots.add(root);
+  return [...roots];
+}
+
+function resolveIosProject(root: string, moduleRoot: string, workspaceKind: GalleryAssetItem['workspaceKind']): ProjectIdentity {
+  const flutterProject = findNearestFlutterProject(root, moduleRoot);
+  if (flutterProject) return flutterProject;
+
+  return {
+    name: resolveIosProjectName(moduleRoot, root),
+    path: normalizePath(moduleRoot),
+    isPrimary: workspaceKind === 'ios' && isDescendantOrSame(moduleRoot, root)
+  };
+}
+
+function scanIosAssets(root: string, workspaceKind: GalleryAssetItem['workspaceKind']): GalleryAssetItem[] {
+  const results: GalleryAssetItem[] = [];
   const seen = new Set<string>();
 
-  walkFiles(iosRoot, (filePath) => {
-    if (path.basename(filePath) !== 'Contents.json') return;
-    if (!normalizePath(filePath).includes('.xcassets/')) return;
+  for (const iosRoot of findIosRoots(root, workspaceKind)) {
+    walkFiles(iosRoot, (filePath) => {
+      if (path.basename(filePath) !== 'Contents.json') return;
+      if (!normalizePath(filePath).includes('.xcassets/')) return;
 
-    const imageSetDir = path.dirname(filePath);
-    const moduleRoot = findIosModuleRoot(imageSetDir, iosRoot);
-    const moduleName = resolveIosModuleName(moduleRoot);
-    const projectName = resolveIosProjectName(moduleRoot, root);
+      const imageSetDir = path.dirname(filePath);
+      const moduleRoot = findIosModuleRoot(imageSetDir, iosRoot);
+      const moduleName = resolveIosModuleName(moduleRoot);
+      const project = resolveIosProject(root, moduleRoot, workspaceKind);
 
-    for (const fileName of extractIosImageSetFilenames(filePath)) {
-      const assetPath = path.join(imageSetDir, fileName);
-      if (!fs.existsSync(assetPath) || !fs.statSync(assetPath).isFile()) continue;
+      for (const fileName of extractIosImageSetFilenames(filePath)) {
+        const assetPath = path.join(imageSetDir, fileName);
+        if (!fs.existsSync(assetPath) || !fs.statSync(assetPath).isFile()) continue;
 
-      const normalizedAssetPath = normalizePath(assetPath);
-      if (seen.has(normalizedAssetPath)) continue;
+        const normalizedAssetPath = normalizePath(assetPath);
+        if (seen.has(normalizedAssetPath)) continue;
 
-      const family = detectFormatFamily(assetPath, false);
-      if (family === 'other') continue;
+        const family = detectFormatFamily(assetPath, false);
+        if (family === 'other') continue;
 
-      seen.add(normalizedAssetPath);
-      const moduleRel = normalizePath(path.relative(moduleRoot, assetPath));
+        seen.add(normalizedAssetPath);
+        const moduleRel = normalizePath(path.relative(moduleRoot, assetPath));
+        const groupPath = moduleRel.includes('/') ? moduleRel.slice(0, moduleRel.lastIndexOf('/')) : '.';
+
+        results.push(toGalleryItem({
+          root,
+          filePath: assetPath,
+          sourceType: 'ios_asset',
+          platform: 'ios',
+          workspaceKind,
+          projectName: project.name,
+          projectPath: project.path,
+          isPrimaryProject: project.isPrimary,
+          moduleName,
+          isPrimaryModule: project.isPrimary && moduleName.toLowerCase() === 'runner',
+          groupPath,
+          copyToken: iosCopyToken(moduleRoot, assetPath),
+          qualifier: '',
+          formatFamily: family
+        }));
+      }
+    });
+
+    walkFiles(iosRoot, (filePath) => {
+      const normalized = normalizePath(filePath);
+      if (normalized.includes('.xcassets/')) return;
+      if (path.basename(filePath).toLowerCase() === 'contents.json') return;
+      if (seen.has(normalized)) return;
+
+      const family = detectFormatFamily(filePath, false);
+      if (family === 'other') return;
+
+      const moduleRoot = findIosModuleRoot(filePath, iosRoot);
+      const moduleName = resolveIosModuleName(moduleRoot);
+      const project = resolveIosProject(root, moduleRoot, workspaceKind);
+      const moduleRel = normalizePath(path.relative(moduleRoot, filePath));
       const groupPath = moduleRel.includes('/') ? moduleRel.slice(0, moduleRel.lastIndexOf('/')) : '.';
 
+      seen.add(normalized);
       results.push(toGalleryItem({
         root,
-        filePath: assetPath,
+        filePath,
         sourceType: 'ios_asset',
         platform: 'ios',
-        projectName,
+        workspaceKind,
+        projectName: project.name,
+        projectPath: project.path,
+        isPrimaryProject: project.isPrimary,
         moduleName,
+        isPrimaryModule: project.isPrimary && moduleName.toLowerCase() === 'runner',
         groupPath,
-        copyToken: iosCopyToken(moduleRoot, assetPath),
+        copyToken: iosCopyToken(moduleRoot, filePath),
         qualifier: '',
         formatFamily: family
       }));
-    }
-  });
-
-  walkFiles(iosRoot, (filePath) => {
-    const normalized = normalizePath(filePath);
-    if (normalized.includes('.xcassets/')) return;
-    if (path.basename(filePath).toLowerCase() === 'contents.json') return;
-    if (seen.has(normalized)) return;
-
-    const family = detectFormatFamily(filePath, false);
-    if (family === 'other') return;
-
-    const moduleRoot = findIosModuleRoot(filePath, iosRoot);
-    const moduleName = resolveIosModuleName(moduleRoot);
-    const projectName = resolveIosProjectName(moduleRoot, root);
-    const moduleRel = normalizePath(path.relative(moduleRoot, filePath));
-    const groupPath = moduleRel.includes('/') ? moduleRel.slice(0, moduleRel.lastIndexOf('/')) : '.';
-
-    seen.add(normalized);
-    results.push(toGalleryItem({
-      root,
-      filePath,
-      sourceType: 'ios_asset',
-      platform: 'ios',
-      projectName,
-      moduleName,
-      groupPath,
-      copyToken: iosCopyToken(moduleRoot, filePath),
-      qualifier: '',
-      formatFamily: family
-    }));
-  });
+    });
+  }
 
   return results;
 }
@@ -687,7 +882,13 @@ function scanIosAssets(root: string): GalleryAssetItem[] {
 export function scanAssets(root: string): GalleryAssetItem[] {
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return [];
 
-  const all = [...scanAndroidRes(root), ...scanFlutterAssets(root), ...scanIosAssets(root)];
+  const workspaceRoot = resolveWorkspaceRoot(root);
+  const workspaceKind = detectWorkspaceKind(workspaceRoot);
+  const all = [
+    ...scanAndroidRes(workspaceRoot, workspaceKind),
+    ...scanFlutterAssets(workspaceRoot, workspaceKind),
+    ...scanIosAssets(workspaceRoot, workspaceKind)
+  ];
 
   const dedup = new Map<string, GalleryAssetItem>();
   for (const item of all) {

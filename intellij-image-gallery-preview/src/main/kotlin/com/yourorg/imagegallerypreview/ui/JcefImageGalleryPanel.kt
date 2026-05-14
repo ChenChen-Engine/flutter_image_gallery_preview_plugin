@@ -3,6 +3,7 @@ package com.yourorg.imagegallerypreview.ui
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.intellij.ide.actions.RevealFileAction
 import com.intellij.ide.projectView.ProjectView
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
@@ -115,6 +116,12 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             }
             "open" -> message.string("absPath")?.let { absPath ->
                 ApplicationManager.getApplication().invokeLater { openAssetInProject(absPath) }
+            }
+            "reveal" -> message.string("absPath")?.let { absPath ->
+                ApplicationManager.getApplication().invokeLater { openAssetInProject(absPath) }
+            }
+            "showInSystem" -> message.string("absPath")?.let { absPath ->
+                ApplicationManager.getApplication().invokeLater { RevealFileAction.openFile(File(absPath)) }
             }
             "requestImageInfo" -> message.string("absPath")?.let(::sendImageInfo)
         }

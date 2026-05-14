@@ -37,12 +37,17 @@ export interface ImageInfo {
 export interface GalleryAssetItem {
   sourceType: SourceType;
   platform: PlatformType;
+  workspaceKind: PlatformType | 'mixed' | 'unknown';
   projectName: string;
+  projectPath: string;
+  isPrimaryProject: boolean;
   moduleName: string;
+  isPrimaryModule: boolean;
   groupPath: string;
   copyToken: string;
   md5: string;
   formatFamily: AssetKind;
+  isAnimated: boolean;
   absPath: string;
   relPath: string;
   format: string;

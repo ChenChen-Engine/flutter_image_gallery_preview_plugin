@@ -38,7 +38,14 @@ suite('scanner', () => {
     const items = scanAssets(root).filter((item) => item.sourceType === 'android_res');
 
     assert.strictEqual(items.length, 3);
-    assert.ok(items.some((item) => item.projectName === path.basename(root) && item.moduleName === 'app' && item.copyToken === 'R.drawable.icon'));
+    assert.ok(items.some((item) =>
+      item.workspaceKind === 'android' &&
+      item.projectName === 'app' &&
+      item.moduleName === 'app' &&
+      item.isPrimaryProject &&
+      item.isPrimaryModule &&
+      item.copyToken === 'R.drawable.icon'
+    ));
     assert.ok(items.some((item) => item.moduleName === 'feature_chat' && item.qualifier === 'xxhdpi'));
     assert.ok(items.some((item) => item.copyToken === 'R.mipmap.ic_launcher' && item.formatFamily === 'vector_xml'));
   });
@@ -64,8 +71,61 @@ suite('scanner', () => {
     const items = scanAssets(root).filter((item) => item.sourceType === 'flutter_asset');
 
     assert.strictEqual(items.length, 2);
-    assert.ok(items.some((item) => item.projectName === 'root_app' && item.moduleName === path.basename(root) && item.relPath.endsWith('assets/images/banner.png')));
-    assert.ok(items.some((item) => item.projectName === 'feature_feed' && item.moduleName === 'feature_feed' && item.copyToken.endsWith('res/images/feed.webp')));
+    assert.ok(items.some((item) =>
+      item.workspaceKind === 'flutter' &&
+      item.projectName === 'root_app' &&
+      item.moduleName === path.basename(root) &&
+      item.isPrimaryProject &&
+      item.isPrimaryModule &&
+      item.relPath.endsWith('assets/images/banner.png')
+    ));
+    assert.ok(items.some((item) =>
+      item.projectName === 'feature_feed' &&
+      item.moduleName === 'feature_feed' &&
+      !item.isPrimaryProject &&
+      item.copyToken.endsWith('res/images/feed.webp')
+    ));
+  });
+
+  test('scan flutter workspace android and ios resources from root and nested projects', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'igp-vscode-flutter-platforms-'));
+
+    fs.writeFileSync(
+      path.join(root, 'pubspec.yaml'),
+      ['name: root_app', 'flutter:', '  assets:', '    - assets/images/'].join('\n'),
+      'utf8'
+    );
+    writePng(path.join(root, 'android/app/src/main/res/drawable/root_icon.png'), 16, 16);
+    writePng(path.join(root, 'ios/Runner/Assets.xcassets/Root.imageset/root.png'), 16, 16);
+    fs.writeFileSync(
+      path.join(root, 'ios/Runner/Assets.xcassets/Root.imageset/Contents.json'),
+      JSON.stringify({ images: [{ filename: 'root.png' }] }),
+      'utf8'
+    );
+
+    const featureRoot = path.join(root, 'packages/feature_one');
+    fs.mkdirSync(featureRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(featureRoot, 'pubspec.yaml'),
+      ['name: feature_one', 'flutter:', '  assets:', '    - assets/'].join('\n'),
+      'utf8'
+    );
+    writePng(path.join(featureRoot, 'android/app/src/main/res/drawable/feature_icon.png'), 18, 18);
+    writePng(path.join(featureRoot, 'ios/Runner/Assets.xcassets/Feature.imageset/feature.png'), 18, 18);
+    fs.writeFileSync(
+      path.join(featureRoot, 'ios/Runner/Assets.xcassets/Feature.imageset/Contents.json'),
+      JSON.stringify({ images: [{ filename: 'feature.png' }] }),
+      'utf8'
+    );
+
+    const items = scanAssets(root);
+    const androidItems = items.filter((item) => item.sourceType === 'android_res');
+    const iosItems = items.filter((item) => item.sourceType === 'ios_asset');
+
+    assert.ok(androidItems.some((item) => item.projectName === 'root_app' && item.isPrimaryProject && item.moduleName === 'app' && item.isPrimaryModule));
+    assert.ok(androidItems.some((item) => item.projectName === 'feature_one' && !item.isPrimaryProject && item.moduleName === 'app' && item.isPrimaryModule));
+    assert.ok(iosItems.some((item) => item.projectName === 'root_app' && item.isPrimaryProject && item.relPath.endsWith('root.png')));
+    assert.ok(iosItems.some((item) => item.projectName === 'feature_one' && !item.isPrimaryProject && item.relPath.endsWith('feature.png')));
   });
 
   test('scan ios assets from xcassets and regular folders', () => {
@@ -99,6 +159,7 @@ suite('scanner', () => {
     assert.ok(banner);
     assert.strictEqual(banner!.moduleName, 'Runner');
     assert.strictEqual(banner!.projectName, path.basename(root));
+    assert.strictEqual(banner!.workspaceKind, 'ios');
   });
 
   test('lottie detection does not include regular json', () => {
@@ -122,6 +183,7 @@ suite('scanner', () => {
 
     assert.strictEqual(items.length, 1);
     assert.strictEqual(items[0].formatFamily, 'lottie');
+    assert.strictEqual(items[0].isAnimated, true);
     assert.ok(items[0].md5.length > 0);
   });
 });
