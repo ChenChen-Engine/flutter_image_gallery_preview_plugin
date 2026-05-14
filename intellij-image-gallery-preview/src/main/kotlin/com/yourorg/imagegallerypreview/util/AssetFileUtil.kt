@@ -10,9 +10,12 @@ import java.util.Locale
 import javax.imageio.ImageIO
 
 object AssetFileUtil {
-    private val directFamilies = setOf("png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "pdf",
+    private val imageFamilies = setOf("png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "pdf",
         "heic", "heif", "apng", "avif", "ico"
     )
+    private val audioFamilies = setOf("mp3", "m4a", "aac", "wav", "ogg", "opus", "flac", "amr", "mid", "midi", "caf")
+    private val videoFamilies = setOf("mp4", "m4v", "mov", "webm", "mkv", "avi", "3gp", "3gpp")
+    private val directFamilies = imageFamilies + audioFamilies + videoFamilies
 
     fun normalizePath(path: String): String = path.replace('\\', '/')
 
@@ -35,6 +38,14 @@ object AssetFileUtil {
 
     fun isSupportedFamily(formatFamily: String): Boolean = formatFamily != "other"
 
+    fun mediaType(formatFamily: String): String {
+        return when (formatFamily.lowercase(Locale.ROOT)) {
+            in audioFamilies -> "audio"
+            in videoFamilies -> "video"
+            else -> "image"
+        }
+    }
+
     fun isAnimated(file: File, formatFamily: String): Boolean {
         return when (formatFamily) {
             "gif", "apng", "lottie" -> true
@@ -44,6 +55,7 @@ object AssetFileUtil {
     }
 
     fun readImageSize(file: File, formatFamily: String): Pair<Int, Int>? {
+        if (mediaType(formatFamily) != "image") return null
         return when (formatFamily) {
             "svg" -> readSvgSize(file)
             "vector_xml" -> readVectorDrawableSize(file)
@@ -76,7 +88,11 @@ object AssetFileUtil {
     }
 
     fun androidCopyToken(resourceFolder: String, file: File): String {
-        val prefix = if (resourceFolder.startsWith("mipmap")) "R.mipmap" else "R.drawable"
+        val prefix = when {
+            resourceFolder.startsWith("mipmap") -> "R.mipmap"
+            resourceFolder.startsWith("raw") -> "R.raw"
+            else -> "R.drawable"
+        }
         val resourceName = fileStem(file)
             .replace(Regex("[^a-z0-9_]"), "_")
             .trim('_')

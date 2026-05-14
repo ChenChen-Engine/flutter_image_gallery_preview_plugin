@@ -13,10 +13,14 @@ class GalleryWebPayloadBuilderTest {
         val image = asset("png", "C:/demo/assets/icon.png")
         val lottie = asset("lottie", "C:/demo/assets/like.json")
         val vector = asset("vector_xml", "C:/demo/app/src/main/res/drawable/ic.xml")
+        val audio = asset("mp3", "C:/demo/assets/click.mp3", mediaType = "audio")
+        val video = asset("mp4", "C:/demo/assets/intro.mp4", mediaType = "video")
 
         assertEquals("image", GalleryWebPayloadBuilder.toWebAsset(image, "file:///icon.png").renderKind)
         assertEquals("lottie", GalleryWebPayloadBuilder.toWebAsset(lottie, "file:///like.json").renderKind)
         assertEquals("placeholder", GalleryWebPayloadBuilder.toWebAsset(vector, "file:///ic.xml").renderKind)
+        assertEquals("audio", GalleryWebPayloadBuilder.toWebAsset(audio, "file:///click.mp3").renderKind)
+        assertEquals("video", GalleryWebPayloadBuilder.toWebAsset(video, "file:///intro.mp4").renderKind)
     }
 
     @Test
@@ -40,7 +44,7 @@ class GalleryWebPayloadBuilderTest {
         assertEquals(false, webItem.isAnimated)
     }
 
-    private fun asset(formatFamily: String, absPath: String): GalleryAssetItem {
+    private fun asset(formatFamily: String, absPath: String, mediaType: String = "image"): GalleryAssetItem {
         return GalleryAssetItem(
             sourceType = SourceType.ANDROID_RES,
             platform = "android",
@@ -58,6 +62,9 @@ class GalleryWebPayloadBuilderTest {
             md5 = "abc123",
             formatFamily = formatFamily,
             isAnimated = formatFamily == "lottie" || formatFamily == "gif",
+            mediaType = mediaType,
+            durationMillis = null,
+            resourceRootPath = "C:/demo/app/src/main/res/drawable",
             absPath = absPath,
             relPath = "app/src/main/res/drawable/icon.png",
             format = formatFamily,

@@ -2,17 +2,23 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { AssetKind, GalleryAssetItem, PlatformType, SourceType } from './shared/types';
+import { AssetKind, GalleryAssetItem, MediaType, PlatformType, SourceType } from './shared/types';
 
 const IGNORED_DIRS = new Set([
-  '.git', '.gradle', '.idea', 'build', 'out', 'output', 'dist', 'node_modules', '.dart_tool', 'Pods'
+  '.git', '.gradle', '.idea', 'build', 'out', 'output', 'dist', 'node_modules', '.dart_tool', 'pods', 'deriveddata'
 ]);
 
-const DIRECT_FORMATS = new Set<AssetKind>([
+const IMAGE_FORMATS = new Set<AssetKind>([
   'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'pdf',
-  'heic', 'heif', 'apng', 'avif', 'ico',
-  'xml'
+  'heic', 'heif', 'apng', 'avif', 'ico'
 ]);
+const AUDIO_FORMATS = new Set<AssetKind>([
+  'mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'amr', 'mid', 'midi', 'caf'
+]);
+const VIDEO_FORMATS = new Set<AssetKind>([
+  'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', '3gp', '3gpp'
+]);
+const DIRECT_FORMATS = new Set<AssetKind>([...IMAGE_FORMATS, ...AUDIO_FORMATS, ...VIDEO_FORMATS]);
 
 function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, '/');
@@ -24,7 +30,7 @@ function extLower(filePath: string): string {
 
 function shouldSkipDir(dirPath: string, root: string): boolean {
   if (dirPath === root) return false;
-  return IGNORED_DIRS.has(path.basename(dirPath));
+  return IGNORED_DIRS.has(path.basename(dirPath).toLowerCase());
 }
 
 function walkFiles(rootDir: string, callback: (filePath: string) => void): void {
@@ -81,6 +87,21 @@ function parseFlutterAssetEntries(pubspecPath: string): string[] {
 function parseFlutterProjectName(pubspecPath: string): string | null {
   const doc = parsePubspec(pubspecPath);
   return typeof doc?.name === 'string' && doc.name.trim() ? doc.name.trim() : null;
+}
+
+function isFlutterDependency(value: any): boolean {
+  if (typeof value === 'string') return value.toLowerCase().includes('flutter');
+  if (value && typeof value === 'object') {
+    return String(value.sdk ?? '').toLowerCase() === 'flutter';
+  }
+  return false;
+}
+
+function isFlutterProject(pubspecPath: string): boolean {
+  const doc = parsePubspec(pubspecPath);
+  if (!doc || typeof doc !== 'object') return false;
+  if (doc.flutter && typeof doc.flutter === 'object') return true;
+  return isFlutterDependency(doc.dependencies?.flutter) || isFlutterDependency(doc.dev_dependencies?.flutter);
 }
 
 interface ProjectIdentity {
@@ -249,6 +270,12 @@ function detectFormatFamily(filePath: string, preferVectorXml: boolean): AssetKi
   return 'other';
 }
 
+function mediaTypeFor(formatFamily: AssetKind): MediaType {
+  if (AUDIO_FORMATS.has(formatFamily)) return 'audio';
+  if (VIDEO_FORMATS.has(formatFamily)) return 'video';
+  return 'image';
+}
+
 function looksLikeVectorDrawable(filePath: string): boolean {
   try {
     const text = fs.readFileSync(filePath, 'utf8');
@@ -410,6 +437,7 @@ function readLottieSize(filePath: string): { width: number; height: number } | n
 }
 
 function readImageSize(filePath: string, formatFamily: AssetKind): { width: number; height: number } | null {
+  if (mediaTypeFor(formatFamily) !== 'image') return null;
   switch (formatFamily) {
     case 'png':
       return readPngSize(filePath);
@@ -450,7 +478,7 @@ function md5Hex(filePath: string): string {
 }
 
 function androidCopyToken(folderName: string, filePath: string): string {
-  const prefix = folderName.startsWith('mipmap') ? 'R.mipmap' : 'R.drawable';
+  const prefix = folderName.startsWith('mipmap') ? 'R.mipmap' : folderName.startsWith('raw') ? 'R.raw' : 'R.drawable';
   const stem = path.basename(filePath, path.extname(filePath)).toLowerCase();
   const normalized = stem.replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '') || 'asset';
   return `${prefix}.${normalized}`;
@@ -503,10 +531,12 @@ function toGalleryItem(params: {
   copyToken: string;
   qualifier: string;
   formatFamily: AssetKind;
+  resourceRootPath: string;
   workspaceKind: GalleryAssetItem['workspaceKind'];
 }): GalleryAssetItem {
   const stat = fs.statSync(params.filePath);
   const size = readImageSize(params.filePath, params.formatFamily);
+  const mediaType = mediaTypeFor(params.formatFamily);
 
   return {
     sourceType: params.sourceType,
@@ -525,6 +555,9 @@ function toGalleryItem(params: {
     md5: md5Hex(params.filePath),
     formatFamily: params.formatFamily,
     isAnimated: isAnimated(params.filePath, params.formatFamily),
+    mediaType,
+    durationMillis: null,
+    resourceRootPath: normalizePath(params.resourceRootPath).replace(/\/+$/, ''),
     absPath: params.filePath,
     relPath: normalizePath(path.relative(params.root, params.filePath)),
     format: extLower(params.filePath),
@@ -552,6 +585,25 @@ function resolveAndroidProject(root: string, moduleRoot: string, workspaceKind: 
     };
   }
 
+  let cursor = moduleRoot;
+  const normalizedRoot = normalizePath(root);
+  while (cursor && normalizePath(cursor).startsWith(normalizedRoot)) {
+    if (
+      fs.existsSync(path.join(cursor, 'settings.gradle')) ||
+      fs.existsSync(path.join(cursor, 'settings.gradle.kts'))
+    ) {
+      return {
+        name: path.basename(cursor) || 'android',
+        path: normalizePath(cursor),
+        isPrimary: samePath(cursor, root)
+      };
+    }
+    if (normalizePath(cursor) === normalizedRoot) break;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+
   return {
     name: resolveAndroidProjectName(root, moduleRoot),
     path: normalizePath(path.dirname(moduleRoot) || moduleRoot),
@@ -575,7 +627,7 @@ function scanAndroidRes(root: string, workspaceKind: GalleryAssetItem['workspace
     const maybeRes = afterSrc[1];
     const bucket = afterSrc[2];
     if (!sourceSet || maybeRes !== 'res') return;
-    if (!(bucket.startsWith('drawable') || bucket.startsWith('mipmap'))) return;
+    if (!(bucket.startsWith('drawable') || bucket.startsWith('mipmap') || bucket.startsWith('raw'))) return;
 
     const moduleRoot = normalized.slice(0, srcIndex);
     const moduleName = resolveModuleName(moduleRoot);
@@ -583,6 +635,10 @@ function scanAndroidRes(root: string, workspaceKind: GalleryAssetItem['workspace
     const qualifier = bucket.includes('-') ? bucket.substring(bucket.indexOf('-') + 1) : '';
     const family = detectFormatFamily(filePath, true);
     if (family === 'other') return;
+    const mediaType = mediaTypeFor(family);
+    const isRaw = bucket.startsWith('raw');
+    if (isRaw && mediaType === 'image') return;
+    if (!isRaw && mediaType !== 'image') return;
 
     const moduleRel = normalizePath(path.relative(moduleRoot, filePath));
     const groupPath = moduleRel.includes('/') ? moduleRel.slice(0, moduleRel.lastIndexOf('/')) : '.';
@@ -602,7 +658,8 @@ function scanAndroidRes(root: string, workspaceKind: GalleryAssetItem['workspace
       groupPath,
       copyToken: androidCopyToken(bucket, filePath),
       qualifier,
-      formatFamily: family
+      formatFamily: family,
+      resourceRootPath: path.dirname(filePath)
     }));
   });
 
@@ -644,13 +701,14 @@ function scanFlutterAssets(root: string, workspaceKind: GalleryAssetItem['worksp
   });
 
   for (const pubspecPath of pubspecs) {
+    if (!isFlutterProject(pubspecPath)) continue;
     const moduleRoot = path.dirname(pubspecPath);
     const moduleName = resolveFlutterModuleName(moduleRoot, pubspecPath);
     const project = resolveFlutterProject(root, moduleRoot, pubspecPath);
     const entries = parseFlutterAssetEntries(pubspecPath);
     const seenProjectFiles = new Set<string>();
 
-    const addFlutterFile = (filePath: string): void => {
+    const addFlutterFile = (filePath: string, resourceRootPath: string): void => {
       const normalized = normalizePath(filePath);
       if (seenProjectFiles.has(normalized)) return;
       seenProjectFiles.add(normalized);
@@ -675,7 +733,8 @@ function scanFlutterAssets(root: string, workspaceKind: GalleryAssetItem['worksp
         groupPath,
         copyToken: flutterCopyToken(moduleRoot, filePath),
         qualifier: '',
-        formatFamily: family
+        formatFamily: family,
+        resourceRootPath
       }));
     };
 
@@ -685,19 +744,19 @@ function scanFlutterAssets(root: string, workspaceKind: GalleryAssetItem['worksp
 
       const target = path.join(moduleRoot, entry);
       if (fs.existsSync(target) && fs.statSync(target).isFile()) {
-        addFlutterFile(target);
+        addFlutterFile(target, path.dirname(target));
         continue;
       }
 
       if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
         walkFiles(target, (filePath) => {
-          addFlutterFile(filePath);
+          addFlutterFile(filePath, target);
         });
         continue;
       }
 
       for (const wildcardFile of resolveWildcardTargets(moduleRoot, entry)) {
-        addFlutterFile(wildcardFile);
+        addFlutterFile(wildcardFile, path.dirname(wildcardFile));
       }
     }
 
@@ -705,7 +764,7 @@ function scanFlutterAssets(root: string, workspaceKind: GalleryAssetItem['worksp
       const fallbackDir = path.join(moduleRoot, fallbackName);
       if (!fs.existsSync(fallbackDir) || !fs.statSync(fallbackDir).isDirectory()) continue;
       walkFiles(fallbackDir, (filePath) => {
-        addFlutterFile(filePath);
+        addFlutterFile(filePath, fallbackDir);
       });
     }
   }
@@ -773,6 +832,19 @@ function findIosRoots(root: string, workspaceKind: GalleryAssetItem['workspaceKi
   return [...roots];
 }
 
+function isIosBundleResourceFile(filePath: string, iosRoot: string): boolean {
+  const relative = normalizePath(path.relative(iosRoot, filePath)).toLowerCase();
+  const segments = relative.split('/').filter(Boolean);
+  if (segments.some((segment) => ['build', 'pods', 'deriveddata', 'source', 'sources', 'classes'].includes(segment))) {
+    return false;
+  }
+  if (segments.some((segment) => segment.endsWith('.xcodeproj') || segment.endsWith('.xcworkspace'))) {
+    return false;
+  }
+  if (segments.some((segment) => ['resources', 'assets', 'res'].includes(segment))) return true;
+  return segments[0] === 'runner' && segments.length <= 2;
+}
+
 function resolveIosProject(root: string, moduleRoot: string, workspaceKind: GalleryAssetItem['workspaceKind']): ProjectIdentity {
   const flutterProject = findNearestFlutterProject(root, moduleRoot);
   if (flutterProject) return flutterProject;
@@ -827,7 +899,8 @@ function scanIosAssets(root: string, workspaceKind: GalleryAssetItem['workspaceK
           groupPath,
           copyToken: iosCopyToken(moduleRoot, assetPath),
           qualifier: '',
-          formatFamily: family
+          formatFamily: family,
+          resourceRootPath: imageSetDir
         }));
       }
     });
@@ -837,6 +910,7 @@ function scanIosAssets(root: string, workspaceKind: GalleryAssetItem['workspaceK
       if (normalized.includes('.xcassets/')) return;
       if (path.basename(filePath).toLowerCase() === 'contents.json') return;
       if (seen.has(normalized)) return;
+      if (!isIosBundleResourceFile(filePath, iosRoot)) return;
 
       const family = detectFormatFamily(filePath, false);
       if (family === 'other') return;
@@ -863,7 +937,8 @@ function scanIosAssets(root: string, workspaceKind: GalleryAssetItem['workspaceK
         groupPath,
         copyToken: iosCopyToken(moduleRoot, filePath),
         qualifier: '',
-        formatFamily: family
+        formatFamily: family,
+        resourceRootPath: path.dirname(filePath)
       }));
     });
   }

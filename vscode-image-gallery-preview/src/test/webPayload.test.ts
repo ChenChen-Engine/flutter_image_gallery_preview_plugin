@@ -7,6 +7,8 @@ suite('web payload', () => {
     assert.strictEqual(toWebviewAssetItem(asset('png'), 'file:///icon.png').renderKind, 'image');
     assert.strictEqual(toWebviewAssetItem(asset('lottie'), 'file:///like.json').renderKind, 'lottie');
     assert.strictEqual(toWebviewAssetItem(asset('vector_xml'), 'file:///ic.xml').renderKind, 'placeholder');
+    assert.strictEqual(toWebviewAssetItem(asset('mp3', 'audio'), 'file:///click.mp3').renderKind, 'audio');
+    assert.strictEqual(toWebviewAssetItem(asset('mp4', 'video'), 'file:///intro.mp4').renderKind, 'video');
   });
 
   test('keeps host computed copy token and grouping fields', () => {
@@ -27,7 +29,7 @@ suite('web payload', () => {
   });
 });
 
-function asset(formatFamily: GalleryAssetItem['formatFamily']): GalleryAssetItem {
+function asset(formatFamily: GalleryAssetItem['formatFamily'], mediaType: GalleryAssetItem['mediaType'] = 'image'): GalleryAssetItem {
   return {
     sourceType: 'android_res',
     platform: 'android',
@@ -45,6 +47,9 @@ function asset(formatFamily: GalleryAssetItem['formatFamily']): GalleryAssetItem
     md5: 'abc123',
     formatFamily,
     isAnimated: formatFamily === 'lottie' || formatFamily === 'gif',
+    mediaType,
+    durationMillis: null,
+    resourceRootPath: 'C:/demo/app/src/main/res/drawable',
     absPath: 'C:/demo/app/src/main/res/drawable/icon.png',
     relPath: 'app/src/main/res/drawable/icon.png',
     format: formatFamily,

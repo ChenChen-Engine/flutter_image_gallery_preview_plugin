@@ -27,6 +27,8 @@ suite('scanner', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'igp-vscode-android-'));
 
     writePng(path.join(root, 'app/src/main/res/drawable/icon.png'), 10, 12);
+    fs.mkdirSync(path.join(root, 'app/src/main/res/raw'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'app/src/main/res/raw/intro.mp3'), Buffer.from([0x49, 0x44, 0x33, 0x03, 0x00]));
     writePng(path.join(root, 'feature_chat/src/debug/res/drawable-xxhdpi/hero.png'), 20, 22);
     fs.mkdirSync(path.join(root, 'app/src/main/res/mipmap-anydpi-v26'), { recursive: true });
     fs.writeFileSync(
@@ -37,17 +39,20 @@ suite('scanner', () => {
 
     const items = scanAssets(root).filter((item) => item.sourceType === 'android_res');
 
-    assert.strictEqual(items.length, 3);
+    assert.strictEqual(items.length, 4);
     assert.ok(items.some((item) =>
       item.workspaceKind === 'android' &&
       item.projectName === 'app' &&
       item.moduleName === 'app' &&
       item.isPrimaryProject &&
       item.isPrimaryModule &&
-      item.copyToken === 'R.drawable.icon'
+      item.copyToken === 'R.drawable.icon' &&
+      item.mediaType === 'image' &&
+      item.resourceRootPath.endsWith('/app/src/main/res/drawable')
     ));
     assert.ok(items.some((item) => item.moduleName === 'feature_chat' && item.qualifier === 'xxhdpi'));
     assert.ok(items.some((item) => item.copyToken === 'R.mipmap.ic_launcher' && item.formatFamily === 'vector_xml'));
+    assert.ok(items.some((item) => item.copyToken === 'R.raw.intro' && item.mediaType === 'audio' && item.formatFamily === 'mp3'));
   });
 
   test('scan flutter assets from multiple pubspec files', () => {
@@ -77,7 +82,9 @@ suite('scanner', () => {
       item.moduleName === path.basename(root) &&
       item.isPrimaryProject &&
       item.isPrimaryModule &&
-      item.relPath.endsWith('assets/images/banner.png')
+      item.relPath.endsWith('assets/images/banner.png') &&
+      item.mediaType === 'image' &&
+      item.resourceRootPath.endsWith('/assets/images')
     ));
     assert.ok(items.some((item) =>
       item.projectName === 'feature_feed' &&
@@ -95,8 +102,8 @@ suite('scanner', () => {
     const secondPlugin = path.join(root, 'adapted_libs/group/app_shortcuts');
     fs.mkdirSync(firstPlugin, { recursive: true });
     fs.mkdirSync(secondPlugin, { recursive: true });
-    fs.writeFileSync(path.join(firstPlugin, 'pubspec.yaml'), 'name: app_shortcuts\n', 'utf8');
-    fs.writeFileSync(path.join(secondPlugin, 'pubspec.yaml'), 'name: app_shortcuts\n', 'utf8');
+    fs.writeFileSync(path.join(firstPlugin, 'pubspec.yaml'), ['name: app_shortcuts', 'dependencies:', '  flutter:', '    sdk: flutter'].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(secondPlugin, 'pubspec.yaml'), ['name: app_shortcuts', 'dependencies:', '  flutter:', '    sdk: flutter'].join('\n'), 'utf8');
     writePng(path.join(firstPlugin, 'assets/icon.png'), 10, 10);
     writePng(path.join(secondPlugin, 'res/icon.png'), 12, 12);
 
@@ -113,6 +120,42 @@ suite('scanner', () => {
     assert.ok(items.every((item) => item.modulePath === item.projectPath));
     assert.ok(items.some((item) => item.copyToken === 'assets/icon.png'));
     assert.ok(items.some((item) => item.copyToken === 'res/icon.png'));
+  });
+
+  test('scan flutter media only from valid flutter projects and resource roots', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'igp-vscode-flutter-media-boundary-'));
+    fs.writeFileSync(
+      path.join(root, 'pubspec.yaml'),
+      ['name: root_app', 'flutter:', '  assets:', '    - assets/images/'].join('\n'),
+      'utf8'
+    );
+    writePng(path.join(root, 'assets/images/declared.png'), 10, 10);
+    fs.mkdirSync(path.join(root, 'assets/audio'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'assets/audio/click.mp3'), Buffer.from([0x49, 0x44, 0x33, 0x03, 0x00]));
+    writePng(path.join(root, 'docs/temp.png'), 8, 8);
+
+    const invalid = path.join(root, 'adapted_libs/plain_dart');
+    fs.mkdirSync(invalid, { recursive: true });
+    fs.writeFileSync(path.join(invalid, 'pubspec.yaml'), 'name: plain_dart\n', 'utf8');
+    writePng(path.join(invalid, 'assets/ignored.png'), 8, 8);
+
+    const plugin = path.join(root, 'adapted_libs/audio_plugin');
+    fs.mkdirSync(plugin, { recursive: true });
+    fs.writeFileSync(
+      path.join(plugin, 'pubspec.yaml'),
+      ['name: audio_plugin', 'dependencies:', '  flutter:', '    sdk: flutter'].join('\n'),
+      'utf8'
+    );
+    fs.mkdirSync(path.join(plugin, 'res/video'), { recursive: true });
+    fs.writeFileSync(path.join(plugin, 'res/video/intro.mp4'), Buffer.alloc(32));
+
+    const items = scanAssets(root).filter((item) => item.sourceType === 'flutter_asset');
+
+    assert.ok(items.some((item) => item.copyToken === 'assets/images/declared.png' && item.mediaType === 'image'));
+    assert.ok(items.some((item) => item.copyToken === 'assets/audio/click.mp3' && item.mediaType === 'audio'));
+    assert.ok(items.some((item) => item.projectName === 'audio_plugin' && item.copyToken === 'res/video/intro.mp4' && item.mediaType === 'video'));
+    assert.ok(items.every((item) => !item.relPath.includes('docs/temp.png')));
+    assert.ok(items.every((item) => item.projectName !== 'plain_dart'));
   });
 
   test('scan flutter workspace android and ios resources from root and nested projects', () => {
@@ -175,9 +218,12 @@ suite('scanner', () => {
     const resources = path.join(runner, 'Resources');
     fs.mkdirSync(resources, { recursive: true });
     writePng(path.join(resources, 'banner.png'), 64, 32);
+    fs.writeFileSync(path.join(resources, 'intro.mov'), Buffer.alloc(32));
+    writePng(path.join(runner, 'Sources/Debug/debug.png'), 8, 8);
+    writePng(path.join(root, 'ios/build/generated.png'), 8, 8);
 
     const items = scanAssets(root).filter((item) => item.sourceType === 'ios_asset');
-    assert.strictEqual(items.length, 2);
+    assert.strictEqual(items.length, 3);
 
     const avatar = items.find((item) => item.relPath.endsWith('avatar.png'));
     assert.ok(avatar);
@@ -188,6 +234,9 @@ suite('scanner', () => {
     assert.strictEqual(banner!.moduleName, 'Runner');
     assert.strictEqual(banner!.projectName, path.basename(root));
     assert.strictEqual(banner!.workspaceKind, 'ios');
+    assert.ok(items.some((item) => item.relPath.endsWith('Resources/intro.mov') && item.mediaType === 'video'));
+    assert.ok(items.every((item) => !item.relPath.includes('Sources/Debug')));
+    assert.ok(items.every((item) => !item.relPath.includes('build/generated')));
   });
 
   test('lottie detection does not include regular json', () => {

@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap
 class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
 
     private val ignoredDirs = setOf(
-        ".git", ".gradle", ".idea", "build", "out", "output", "dist", "node_modules", ".dart_tool", "Pods"
+        ".git", ".gradle", ".idea", "build", "out", "output", "dist", "node_modules", ".dart_tool", "pods", "deriveddata"
     )
 
     private val root: File = resolveWorkspaceRoot(openedRoot.absoluteFile)
@@ -62,7 +62,11 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             val projectIdentity = resolveAndroidProject(moduleRoot)
 
             val bucketDirs = resDir.listFiles()?.filter {
-                it.isDirectory && (it.name.startsWith("drawable", ignoreCase = true) || it.name.startsWith("mipmap", ignoreCase = true))
+                it.isDirectory && (
+                    it.name.startsWith("drawable", ignoreCase = true) ||
+                        it.name.startsWith("mipmap", ignoreCase = true) ||
+                        it.name.startsWith("raw", ignoreCase = true)
+                    )
             } ?: emptyList()
 
             for (bucketDir in bucketDirs) {
@@ -73,6 +77,10 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
                 for (file in files) {
                     val family = AssetFileUtil.detectFormatFamily(file, preferVectorXml = true)
                     if (!AssetFileUtil.isSupportedFamily(family)) continue
+                    val mediaType = AssetFileUtil.mediaType(family)
+                    val isRaw = bucketName.startsWith("raw", ignoreCase = true)
+                    if (isRaw && mediaType == "image") continue
+                    if (!isRaw && mediaType != "image") continue
 
                     val kind = AssetFileUtil.assetKind(family)
                     val size = AssetFileUtil.readImageSize(file, family)
@@ -96,6 +104,9 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
                         md5 = AssetFileUtil.md5Hex(file),
                         formatFamily = family,
                         isAnimated = AssetFileUtil.isAnimated(file, family),
+                        mediaType = mediaType,
+                        durationMillis = null,
+                        resourceRootPath = AssetFileUtil.normalizePath(bucketDir.absolutePath),
                         absPath = file.absolutePath,
                         relPath = AssetFileUtil.relativePath(root, file),
                         format = file.extension.lowercase(Locale.ROOT),
@@ -119,16 +130,17 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
         }
 
         for (pubspec in pubspecs) {
+            if (!PubspecAssetsParser.isFlutterProject(pubspec)) continue
             val moduleRoot = pubspec.parentFile ?: continue
             val moduleName = resolveFlutterModuleName(moduleRoot, pubspec)
             val projectIdentity = resolveFlutterProject(moduleRoot, pubspec)
             val entries = PubspecAssetsParser.parseAssetEntries(pubspec)
             val seenProjectFiles = linkedSetOf<String>()
 
-            fun addCandidate(file: File) {
+            fun addCandidate(file: File, resourceRoot: File) {
                 val normalized = AssetFileUtil.normalizePath(file.absolutePath)
                 if (seenProjectFiles.add(normalized)) {
-                    addFlutterFile(file, moduleRoot, projectIdentity, moduleName, results)
+                    addFlutterFile(file, moduleRoot, projectIdentity, moduleName, resourceRoot, results)
                 }
             }
 
@@ -138,17 +150,17 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
 
                 val target = File(moduleRoot, entry)
                 when {
-                    target.isFile -> addCandidate(target)
+                    target.isFile -> addCandidate(target, target.parentFile ?: moduleRoot)
                     target.isDirectory -> {
                         for (file in walkFiltered(target)) {
                             if (!file.isFile) continue
-                            addCandidate(file)
+                            addCandidate(file, target)
                         }
                     }
                     else -> {
                         val wildcardFiles = resolveWildcardTargets(moduleRoot, entry)
                         for (file in wildcardFiles) {
-                            addCandidate(file)
+                            addCandidate(file, file.parentFile ?: moduleRoot)
                         }
                     }
                 }
@@ -159,7 +171,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
                 if (!fallbackDir.exists() || !fallbackDir.isDirectory) continue
                 for (file in walkFiltered(fallbackDir)) {
                     if (!file.isFile) continue
-                    addCandidate(file)
+                    addCandidate(file, fallbackDir)
                 }
             }
         }
@@ -170,12 +182,14 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
         moduleRoot: File,
         projectIdentity: ProjectIdentity,
         moduleName: String,
+        resourceRoot: File,
         results: MutableList<GalleryAssetItem>
     ) {
         val family = AssetFileUtil.detectFormatFamily(file, preferVectorXml = false)
         if (!AssetFileUtil.isSupportedFamily(family)) return
 
         val kind = AssetFileUtil.assetKind(family)
+        val mediaType = AssetFileUtil.mediaType(family)
         val size = AssetFileUtil.readImageSize(file, family)
         val moduleRelPath = AssetFileUtil.relativePath(moduleRoot, file, root)
         val groupPath = moduleRelPath.substringBeforeLast('/', ".")
@@ -197,6 +211,9 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             md5 = AssetFileUtil.md5Hex(file),
             formatFamily = family,
             isAnimated = AssetFileUtil.isAnimated(file, family),
+            mediaType = mediaType,
+            durationMillis = null,
+            resourceRootPath = AssetFileUtil.normalizePath(resourceRoot.absolutePath),
             absPath = file.absolutePath,
             relPath = AssetFileUtil.relativePath(root, file),
             format = file.extension.lowercase(Locale.ROOT),
@@ -241,7 +258,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
                 val normalized = AssetFileUtil.normalizePath(candidate.absolutePath)
                 if (!seenPaths.add(normalized)) continue
 
-                addIosFile(candidate, moduleRoot, projectIdentity, moduleName, results)
+                addIosFile(candidate, moduleRoot, projectIdentity, moduleName, imageSetDir, results)
             }
         }
     }
@@ -257,6 +274,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             val normalizedPath = AssetFileUtil.normalizePath(file.absolutePath)
             if (normalizedPath.lowercase(Locale.ROOT).contains(".xcassets/")) continue
             if (file.name.equals("Contents.json", ignoreCase = true)) continue
+            if (!isIosBundleResourceFile(file, iosRoot)) continue
 
             val family = AssetFileUtil.detectFormatFamily(file, preferVectorXml = false)
             if (!AssetFileUtil.isSupportedFamily(family)) continue
@@ -265,7 +283,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             val moduleRoot = findIosModuleRoot(file, iosRoot)
             val moduleName = resolveIosModuleName(moduleRoot)
             val projectIdentity = resolveIosProject(moduleRoot)
-            addIosFile(file, moduleRoot, projectIdentity, moduleName, results, family)
+            addIosFile(file, moduleRoot, projectIdentity, moduleName, file.parentFile ?: moduleRoot, results, family)
         }
     }
 
@@ -274,6 +292,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
         moduleRoot: File,
         projectIdentity: ProjectIdentity,
         moduleName: String,
+        resourceRoot: File,
         results: MutableList<GalleryAssetItem>,
         preDetectedFamily: String? = null
     ) {
@@ -281,6 +300,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
         if (!AssetFileUtil.isSupportedFamily(family)) return
 
         val kind = AssetFileUtil.assetKind(family)
+        val mediaType = AssetFileUtil.mediaType(family)
         val size = AssetFileUtil.readImageSize(file, family)
         val moduleRelPath = AssetFileUtil.relativePath(moduleRoot, file, root)
         val groupPath = moduleRelPath.substringBeforeLast('/', ".")
@@ -302,6 +322,9 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             md5 = AssetFileUtil.md5Hex(file),
             formatFamily = family,
             isAnimated = AssetFileUtil.isAnimated(file, family),
+            mediaType = mediaType,
+            durationMillis = null,
+            resourceRootPath = AssetFileUtil.normalizePath(resourceRoot.absolutePath),
             absPath = file.absolutePath,
             relPath = AssetFileUtil.relativePath(root, file),
             format = file.extension.lowercase(Locale.ROOT),
@@ -342,6 +365,20 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
         }
 
         return fallback
+    }
+
+    private fun isIosBundleResourceFile(file: File, iosRoot: File): Boolean {
+        val relative = AssetFileUtil.relativePath(iosRoot, file).lowercase(Locale.ROOT)
+        val segments = relative.split('/').filter { it.isNotBlank() }
+        if (segments.any { it in setOf("build", "pods", "deriveddata", "source", "sources", "classes") }) {
+            return false
+        }
+        if (segments.any { it.endsWith(".xcodeproj") || it.endsWith(".xcworkspace") }) {
+            return false
+        }
+        if (segments.any { it in setOf("resources", "assets", "res") }) return true
+        if (segments.firstOrNull()?.equals("runner", ignoreCase = true) == true && segments.size <= 2) return true
+        return false
     }
 
     private fun resolveModuleName(moduleRoot: File): String = moduleRoot.name.ifBlank { "root" }
@@ -507,7 +544,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
     private fun shouldSkipDirectory(dir: File): Boolean {
         if (!dir.isDirectory) return false
         if (dir == root) return false
-        return dir.name in ignoredDirs
+        return dir.name.lowercase(Locale.ROOT) in ignoredDirs
     }
 
     private fun resolveWorkspaceRoot(openedRoot: File): File {

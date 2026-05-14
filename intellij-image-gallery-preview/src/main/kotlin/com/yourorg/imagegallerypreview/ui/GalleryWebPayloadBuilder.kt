@@ -1,6 +1,7 @@
 package com.yourorg.imagegallerypreview.ui
 
 import com.yourorg.imagegallerypreview.metadata.ImageMetadataInfo
+import com.yourorg.imagegallerypreview.metadata.MediaMetadataInfo
 import com.yourorg.imagegallerypreview.model.GalleryAssetItem
 
 internal data class GalleryWebAssetItem(
@@ -20,6 +21,10 @@ internal data class GalleryWebAssetItem(
     val md5: String,
     val formatFamily: String,
     val isAnimated: Boolean,
+    val mediaType: String,
+    val durationMillis: Long?,
+    val durationLabel: String,
+    val resourceRootPath: String,
     val absPath: String,
     val relPath: String,
     val format: String,
@@ -32,7 +37,8 @@ internal data class GalleryWebAssetItem(
     val previewSrc: String?,
     val renderKind: String,
     val lottieJson: String? = null,
-    val imageInfo: ImageMetadataInfo? = null
+    val imageInfo: ImageMetadataInfo? = null,
+    val mediaInfo: MediaMetadataInfo? = null
 )
 
 internal object GalleryWebPayloadBuilder {
@@ -52,6 +58,8 @@ internal object GalleryWebPayloadBuilder {
     fun toWebAsset(item: GalleryAssetItem, previewSrc: String?, lottieJson: String? = null): GalleryWebAssetItem {
         val renderKind = when {
             item.formatFamily == "lottie" -> "lottie"
+            item.mediaType == "audio" -> "audio"
+            item.mediaType == "video" -> "video"
             item.formatFamily in browserImageFamilies && previewSrc != null -> "image"
             else -> "placeholder"
         }
@@ -73,6 +81,10 @@ internal object GalleryWebPayloadBuilder {
             md5 = item.md5,
             formatFamily = item.formatFamily,
             isAnimated = item.isAnimated,
+            mediaType = item.mediaType,
+            durationMillis = item.durationMillis,
+            durationLabel = durationLabel(item.durationMillis),
+            resourceRootPath = item.resourceRootPath.replace('\\', '/'),
             absPath = item.absPath.replace('\\', '/'),
             relPath = item.relPath.replace('\\', '/'),
             format = item.format,
@@ -85,7 +97,22 @@ internal object GalleryWebPayloadBuilder {
             previewSrc = previewSrc,
             renderKind = renderKind,
             lottieJson = lottieJson,
-            imageInfo = item.imageInfo
+            imageInfo = item.imageInfo,
+            mediaInfo = null
         )
+    }
+
+    private fun durationLabel(durationMillis: Long?): String {
+        val millis = durationMillis ?: return ""
+        if (millis <= 0L) return ""
+        val totalSeconds = millis / 1000L
+        val hours = totalSeconds / 3600L
+        val minutes = (totalSeconds % 3600L) / 60L
+        val seconds = totalSeconds % 60L
+        return if (hours > 0L) {
+            "%d:%02d:%02d".format(hours, minutes, seconds)
+        } else {
+            "%d:%02d".format(minutes, seconds)
+        }
     }
 }

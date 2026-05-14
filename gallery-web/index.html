@@ -11,6 +11,17 @@
     <header class="toolbar">
       <div class="toolbar-main">
         <input id="searchInput" class="search-input" type="search" placeholder="Search by file name or MD5" autocomplete="off">
+        <div class="toolbar-right">
+          <div class="zoom-controls" aria-label="Preview size">
+            <button id="zoomOutButton" class="icon-button" type="button" title="缩小一级">−</button>
+            <button id="zoomResetButton" class="icon-button" type="button" title="还原预览尺寸">□</button>
+            <button id="zoomInButton" class="icon-button" type="button" title="放大一级">＋</button>
+          </div>
+          <div id="statusText" class="status-text">Visible 0 / Indexed 0</div>
+          <button id="refreshButton" class="primary-button" type="button">Refresh</button>
+        </div>
+      </div>
+      <div class="toolbar-filters">
         <select id="platformFilter" class="filter-select" aria-label="Platform">
           <option value="all">All Platforms</option>
           <option value="android">Android</option>
@@ -23,18 +34,14 @@
         <select id="moduleFilter" class="filter-select hidden" aria-label="Module">
           <option value="all">All Modules</option>
         </select>
-        <select id="typeFilter" class="filter-select" aria-label="Type">
-          <option value="all">All Types</option>
+        <select id="mediaTypeFilter" class="filter-select" aria-label="Media Type">
+          <option value="all">All Media</option>
         </select>
-        <div class="zoom-controls" aria-label="Preview size">
-          <button id="zoomOutButton" class="icon-button" type="button" title="缩小预览">-</button>
-          <button id="zoomInButton" class="icon-button" type="button" title="放大预览">+</button>
-          <button id="zoomResetButton" class="icon-button" type="button" title="还原预览尺寸">「」</button>
-        </div>
-        <button id="refreshButton" class="primary-button" type="button">Refresh</button>
+        <select id="formatFilter" class="filter-select" aria-label="Format">
+          <option value="all">All Formats</option>
+        </select>
       </div>
       <div class="toolbar-meta">
-        <div id="statusText" class="status-text">Visible 0 / Indexed 0</div>
         <div id="stateText" class="state-text">Idle</div>
       </div>
     </header>
@@ -56,7 +63,7 @@
     <div class="modal-backdrop" data-close-modal></div>
     <div class="modal-card">
       <div class="modal-header">
-        <h2 id="infoTitle">Image Info</h2>
+        <h2 id="infoTitle">Media Info</h2>
         <button class="modal-close" type="button" data-close-modal aria-label="Close">×</button>
       </div>
       <div id="infoContent" class="info-content"></div>

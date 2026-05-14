@@ -26,6 +26,24 @@ object PubspecAssetsParser {
         return normalizeEntry(name)
     }
 
+    fun isFlutterProject(pubspec: File): Boolean {
+        val rootMap = loadRootMap(pubspec) ?: return false
+        if (rootMap["flutter"] is Map<*, *>) return true
+
+        val dependencies = rootMap["dependencies"] as? Map<*, *>
+        val devDependencies = rootMap["dev_dependencies"] as? Map<*, *>
+        return isFlutterDependency(dependencies?.get("flutter")) ||
+            isFlutterDependency(devDependencies?.get("flutter"))
+    }
+
+    private fun isFlutterDependency(value: Any?): Boolean {
+        return when (value) {
+            is String -> value.contains("flutter", ignoreCase = true)
+            is Map<*, *> -> value["sdk"]?.toString()?.equals("flutter", ignoreCase = true) == true
+            else -> false
+        }
+    }
+
     private fun loadRootMap(pubspec: File): Map<*, *>? {
         if (!pubspec.exists() || !pubspec.isFile) return null
         return try {

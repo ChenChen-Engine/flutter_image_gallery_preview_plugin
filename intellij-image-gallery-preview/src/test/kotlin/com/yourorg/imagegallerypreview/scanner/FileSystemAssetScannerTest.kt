@@ -18,12 +18,15 @@ class FileSystemAssetScannerTest {
 
         val appDrawable = File(root, "app/src/main/res/drawable")
         val appMipmap = File(root, "app/src/main/res/mipmap-anydpi-v26")
+        val appRaw = File(root, "app/src/main/res/raw")
         val featureDrawable = File(root, "feature_chat/src/debug/res/drawable-xxhdpi")
         appDrawable.mkdirs()
         appMipmap.mkdirs()
+        appRaw.mkdirs()
         featureDrawable.mkdirs()
 
         createPng(File(appDrawable, "icon.png"), 24, 24)
+        File(appRaw, "intro.mp3").writeBytes(byteArrayOf(0x49, 0x44, 0x33, 0x03, 0x00))
         createPng(File(featureDrawable, "hero.jpg"), 100, 50)
         File(appMipmap, "ic_launcher.xml").writeText(
             """
@@ -39,17 +42,20 @@ class FileSystemAssetScannerTest {
 
         val items = FileSystemAssetScanner(root).scan().filter { it.sourceType == SourceType.ANDROID_RES }
 
-        assertEquals(3, items.size)
+        assertEquals(4, items.size)
         assertTrue(items.any {
             it.workspaceKind == "android" &&
                 it.projectName == "app" &&
                 it.moduleName == "app" &&
                 it.isPrimaryProject &&
                 it.isPrimaryModule &&
-                it.copyToken == "R.drawable.icon"
+                it.copyToken == "R.drawable.icon" &&
+                it.mediaType == "image" &&
+                it.resourceRootPath.endsWith("/app/src/main/res/drawable")
         })
         assertTrue(items.any { it.moduleName == "feature_chat" && it.qualifier == "xxhdpi" })
         assertTrue(items.any { it.copyToken == "R.mipmap.ic_launcher" && it.formatFamily == "vector_xml" })
+        assertTrue(items.any { it.copyToken == "R.raw.intro" && it.mediaType == "audio" && it.formatFamily == "mp3" })
     }
 
     @Test
@@ -90,7 +96,9 @@ class FileSystemAssetScannerTest {
                 it.moduleName == root.name &&
                 it.isPrimaryProject &&
                 it.isPrimaryModule &&
-                it.relPath.endsWith("assets/images/a.png")
+                it.relPath.endsWith("assets/images/a.png") &&
+                it.mediaType == "image" &&
+                it.resourceRootPath.endsWith("/assets/images")
         })
         assertTrue(items.any {
             it.projectName == "feature_feed" &&
@@ -110,11 +118,11 @@ class FileSystemAssetScannerTest {
         val secondPlugin = File(root, "adapted_libs/group/app_shortcuts")
         File(firstPlugin, "pubspec.yaml").apply {
             parentFile.mkdirs()
-            writeText("name: app_shortcuts\n")
+            writeText("name: app_shortcuts\ndependencies:\n  flutter:\n    sdk: flutter\n")
         }
         File(secondPlugin, "pubspec.yaml").apply {
             parentFile.mkdirs()
-            writeText("name: app_shortcuts\n")
+            writeText("name: app_shortcuts\ndependencies:\n  flutter:\n    sdk: flutter\n")
         }
 
         createPng(File(firstPlugin, "assets/icon.png"), 10, 10)
@@ -132,6 +140,52 @@ class FileSystemAssetScannerTest {
         assertTrue(items.all { it.modulePath == it.projectPath })
         assertTrue(items.any { it.copyToken == "assets/icon.png" })
         assertTrue(items.any { it.copyToken == "res/icon.png" })
+    }
+
+    @Test
+    fun `scan flutter media only from valid flutter projects and resource roots`() {
+        val root = createTempDirectory("igp-test-flutter-media-boundary").toFile()
+        File(root, "pubspec.yaml").writeText("name: root_app\nflutter:\n  assets:\n    - assets/images/\n")
+        createPng(File(root, "assets/images/declared.png"), 10, 10)
+        File(root, "assets/audio/click.mp3").apply {
+            parentFile.mkdirs()
+            writeBytes(byteArrayOf(0x49, 0x44, 0x33, 0x03, 0x00))
+        }
+        File(root, "docs/temp.png").apply {
+            parentFile.mkdirs()
+            writeBytes(byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47))
+        }
+
+        val invalidPubspec = File(root, "adapted_libs/plain_dart/pubspec.yaml").apply {
+            parentFile.mkdirs()
+            writeText("name: plain_dart\n")
+        }
+        createPng(File(invalidPubspec.parentFile, "assets/ignored.png"), 8, 8)
+
+        val pluginRoot = File(root, "adapted_libs/audio_plugin")
+        File(pluginRoot, "pubspec.yaml").apply {
+            parentFile.mkdirs()
+            writeText(
+                """
+                name: audio_plugin
+                dependencies:
+                  flutter:
+                    sdk: flutter
+                """.trimIndent()
+            )
+        }
+        File(pluginRoot, "res/video/intro.mp4").apply {
+            parentFile.mkdirs()
+            writeBytes(ByteArray(32) { it.toByte() })
+        }
+
+        val items = FileSystemAssetScanner(root).scan().filter { it.sourceType == SourceType.FLUTTER_ASSET }
+
+        assertTrue(items.any { it.copyToken == "assets/images/declared.png" && it.mediaType == "image" })
+        assertTrue(items.any { it.copyToken == "assets/audio/click.mp3" && it.mediaType == "audio" })
+        assertTrue(items.any { it.projectName == "audio_plugin" && it.copyToken == "res/video/intro.mp4" && it.mediaType == "video" })
+        assertTrue(items.none { it.relPath.contains("docs/temp.png") })
+        assertTrue(items.none { it.projectName == "plain_dart" })
     }
 
     @Test
@@ -189,10 +243,19 @@ class FileSystemAssetScannerTest {
         val regularDir = File(appRoot, "Resources")
         regularDir.mkdirs()
         createPng(File(regularDir, "banner.png"), 64, 32)
+        File(appRoot, "Sources/Debug/debug.png").apply {
+            parentFile.mkdirs()
+            writeBytes(byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47))
+        }
+        File(root, "ios/build/generated.png").apply {
+            parentFile.mkdirs()
+            writeBytes(byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47))
+        }
+        File(regularDir, "intro.mov").writeBytes(ByteArray(32) { it.toByte() })
 
         val items = FileSystemAssetScanner(root).scan().filter { it.sourceType == SourceType.IOS_ASSET }
 
-        assertEquals(2, items.size)
+        assertEquals(3, items.size)
         val avatar = items.find { it.relPath.endsWith("avatar.png") }
         assertNotNull(avatar)
         assertTrue(avatar.copyToken.contains("Assets.xcassets/Avatar.imageset/avatar.png"))
@@ -202,6 +265,9 @@ class FileSystemAssetScannerTest {
         assertEquals("Runner", banner.moduleName)
         assertEquals(root.name, banner.projectName)
         assertEquals("ios", banner.workspaceKind)
+        assertTrue(items.any { it.relPath.endsWith("Resources/intro.mov") && it.mediaType == "video" })
+        assertTrue(items.none { it.relPath.contains("Sources/Debug") })
+        assertTrue(items.none { it.relPath.contains("build/generated") })
     }
 
     @Test

@@ -174,6 +174,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     private fun buildDuplicateIndex(items: List<GalleryAssetItem>): Map<String, Map<String, List<GalleryAssetItem>>> {
         return items
+            .filter { it.mediaType == "image" && it.md5.isNotBlank() }
             .groupBy { it.platform }
             .mapValues { (_, platformItems) ->
                 platformItems.groupBy { it.md5 }
@@ -182,24 +183,20 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     private fun handleCreatedFileDuplicateCheck(path: String) {
         val absPath = AssetFileUtil.normalizePath(path)
+        val createdItem = cache.firstOrNull { AssetFileUtil.normalizePath(it.absPath) == absPath } ?: return
+        if (createdItem.mediaType != "image" || createdItem.resourceRootPath.isBlank() || createdItem.md5.isBlank()) return
+
         val file = File(absPath)
         if (!file.exists() || !file.isFile) return
 
-        val formatFamily = AssetFileUtil.detectFormatFamily(file, preferVectorXml = true)
-        if (!AssetFileUtil.isSupportedFamily(formatFamily)) return
-
-        val platform = detectPlatformByPath(absPath) ?: return
-        val md5 = AssetFileUtil.md5Hex(file)
-        if (md5.isBlank()) return
-
-        val duplicates = duplicateIndex[platform]
-            ?.get(md5)
+        val duplicates = duplicateIndex[createdItem.platform]
+            ?.get(createdItem.md5)
             ?.filter { item -> AssetFileUtil.normalizePath(item.absPath) != absPath }
             .orEmpty()
 
         if (duplicates.isEmpty()) return
 
-        showDuplicateDialogAndHandle(file, platform, duplicates)
+        showDuplicateDialogAndHandle(file, createdItem.platform, duplicates)
     }
 
     private fun showDuplicateDialogAndHandle(newFile: File, platform: String, duplicates: List<GalleryAssetItem>) {
@@ -274,45 +271,34 @@ class GalleryIndexService(private val project: Project) : Disposable {
         FileEditorManager.getInstance(project).openFile(virtualFile, true)
     }
 
-    private fun detectPlatformByPath(path: String): String? {
-        val lower = path.lowercase(Locale.ROOT)
-
-        if (lower.contains("/src/") && (lower.contains("/res/drawable") || lower.contains("/res/mipmap"))) {
-            return "android"
-        }
-
-        if (lower.contains("/ios/")) {
-            return "ios"
-        }
-
-        if (lower.contains("/assets/") || lower.contains("/res/")) {
-            return "flutter"
-        }
-
-        return null
-    }
-
     private fun isInterestingPath(path: String): Boolean {
         val normalizedPath = path.replace('\\', '/').lowercase(Locale.ROOT)
+        if (hasIgnoredSegment(normalizedPath)) return false
 
         if (normalizedPath.endsWith("/pubspec.yaml")) return true
 
         if (normalizedPath.contains("/ios/")) {
-            return normalizedPath.endsWith("contents.json") || isImageLikePath(normalizedPath) || normalizedPath.endsWith(".json")
+            return normalizedPath.endsWith("contents.json") || isMediaLikePath(normalizedPath)
         }
 
-        if (normalizedPath.contains("/res/drawable") || normalizedPath.contains("/res/mipmap")) {
-            return isImageLikePath(normalizedPath) || normalizedPath.endsWith(".xml")
+        if (normalizedPath.contains("/res/drawable") || normalizedPath.contains("/res/mipmap") || normalizedPath.contains("/res/raw")) {
+            return isMediaLikePath(normalizedPath) || normalizedPath.endsWith(".xml")
         }
 
         if (normalizedPath.contains("/assets/") || normalizedPath.contains("/res/")) {
-            return isImageLikePath(normalizedPath) || normalizedPath.endsWith(".json") || normalizedPath.endsWith(".svg")
+            return isMediaLikePath(normalizedPath) || normalizedPath.endsWith(".json") || normalizedPath.endsWith(".svg")
         }
 
         return false
     }
 
-    private fun isImageLikePath(path: String): Boolean {
+    private fun hasIgnoredSegment(path: String): Boolean {
+        return path.split('/').any { segment ->
+            segment in setOf("build", "out", "output", "dist", "node_modules", ".dart_tool", "pods", "deriveddata")
+        }
+    }
+
+    private fun isMediaLikePath(path: String): Boolean {
         return path.endsWith(".png") ||
             path.endsWith(".jpg") ||
             path.endsWith(".jpeg") ||
@@ -326,6 +312,25 @@ class GalleryIndexService(private val project: Project) : Disposable {
             path.endsWith(".apng") ||
             path.endsWith(".avif") ||
             path.endsWith(".ico") ||
+            path.endsWith(".mp3") ||
+            path.endsWith(".m4a") ||
+            path.endsWith(".aac") ||
+            path.endsWith(".wav") ||
+            path.endsWith(".ogg") ||
+            path.endsWith(".opus") ||
+            path.endsWith(".flac") ||
+            path.endsWith(".amr") ||
+            path.endsWith(".mid") ||
+            path.endsWith(".midi") ||
+            path.endsWith(".caf") ||
+            path.endsWith(".mp4") ||
+            path.endsWith(".m4v") ||
+            path.endsWith(".mov") ||
+            path.endsWith(".webm") ||
+            path.endsWith(".mkv") ||
+            path.endsWith(".avi") ||
+            path.endsWith(".3gp") ||
+            path.endsWith(".3gpp") ||
             path.endsWith(".json") ||
             path.endsWith(".xml")
     }

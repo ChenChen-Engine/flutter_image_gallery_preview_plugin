@@ -1,11 +1,24 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import exifReader from 'exif-reader';
 import sharp from 'sharp';
 import { scanAssets } from './scanner';
-import { GalleryAssetItem, ImageInfo, PlatformType } from './shared/types';
+import {
+  GalleryAssetItem,
+  ImageInfo,
+  MediaMetadataInfo,
+  MediaType,
+  MetadataRow,
+  MetadataSection,
+  PlatformType
+} from './shared/types';
 import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
+
+const execFileAsync = promisify(execFile);
+const MEDIAINFO_DOWNLOAD_URL = 'https://mediaarea.net/en/MediaInfo/Download';
 
 class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'imageGalleryPreview.view';
@@ -14,7 +27,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private watchers: vscode.FileSystemWatcher[] = [];
   private cachedItems: GalleryAssetItem[] = [];
   private duplicateIndex: Map<PlatformType, Map<string, GalleryAssetItem[]>> = new Map();
-  private infoCache = new Map<string, ImageInfo>();
+  private infoCache = new Map<string, MediaMetadataInfo>();
   private refreshTask: Promise<void> | null = null;
   private refreshPending = false;
   private afterRefreshQueue: Array<(items: GalleryAssetItem[]) => Promise<void> | void> = [];
@@ -29,7 +42,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     void this.refresh();
   }
 
-  resolveWebviewView(webviewView: vscode.WebviewView): void | Thenable<void> {
+  resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
@@ -110,12 +123,17 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     }
 
     if (message?.type === 'requestImageInfo' && typeof message.absPath === 'string') {
-      const info = await this.loadImageInfo(message.absPath);
+      const info = await this.loadMediaInfo(message.absPath);
       await this.view?.webview.postMessage({
         type: 'imageInfo',
         absPath: normalizePath(message.absPath),
         info
       });
+      return;
+    }
+
+    if (message?.type === 'openExternal' && typeof message.url === 'string') {
+      await vscode.env.openExternal(vscode.Uri.parse(message.url));
     }
   }
 
@@ -135,7 +153,8 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       scanAssets(folder.uri.fsPath).map((item) => ({
         ...item,
         absPath: normalizePath(item.absPath),
-        relPath: normalizePath(item.relPath)
+        relPath: normalizePath(item.relPath),
+        resourceRootPath: normalizePath(item.resourceRootPath)
       }))
     );
 
@@ -160,7 +179,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       const lottieJson = item.formatFamily === 'lottie' ? readSmallTextFile(normalizedAbsPath) : null;
       return {
         ...toWebviewAssetItem(item, previewUri, lottieJson),
-        imageInfo: this.infoCache.get(normalizedAbsPath)
+        mediaInfo: this.infoCache.get(normalizedAbsPath)
       };
     });
 
@@ -175,6 +194,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     const index = new Map<PlatformType, Map<string, GalleryAssetItem[]>>();
 
     for (const item of items) {
+      if (item.mediaType !== 'image' || !item.md5) continue;
       const platformMap = index.get(item.platform) ?? new Map<string, GalleryAssetItem[]>();
       const list = platformMap.get(item.md5) ?? [];
       list.push(item);
@@ -189,6 +209,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     const absPath = normalizePath(fsPath);
     const createdItem = items.find((item) => normalizePath(item.absPath) === absPath);
     if (!createdItem) return;
+    if (createdItem.mediaType !== 'image' || !createdItem.resourceRootPath || !createdItem.md5) return;
 
     const platformMap = this.duplicateIndex.get(createdItem.platform);
     if (!platformMap) return;
@@ -247,6 +268,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     const patterns = [
       '**/src/*/res/drawable*/**/*',
       '**/src/*/res/mipmap*/**/*',
+      '**/src/*/res/raw*/**/*',
       '**/pubspec.yaml',
       '**/assets/**/*',
       '**/res/**/*',
@@ -257,12 +279,15 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       const watcher = vscode.workspace.createFileSystemWatcher(pattern);
 
       watcher.onDidCreate((uri) => {
+        if (!isInterestingFsPath(uri.fsPath)) return;
         void this.refresh(async (items) => {
           await this.handleCreatedFile(uri.fsPath, items);
         });
       });
 
-      const onChange = () => void this.refresh();
+      const onChange = (uri: vscode.Uri) => {
+        if (isInterestingFsPath(uri.fsPath)) void this.refresh();
+      };
       watcher.onDidChange(onChange);
       watcher.onDidDelete(onChange);
 
@@ -270,15 +295,13 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async loadImageInfo(absPath: string): Promise<ImageInfo> {
+  private async loadMediaInfo(absPath: string): Promise<MediaMetadataInfo> {
     const normalized = normalizePath(absPath);
-    const stat = safeStat(normalized);
     const cached = this.infoCache.get(normalized);
-    if (cached && stat && cached.fileSize === readableBytes(stat.size)) {
-      return cached;
-    }
+    if (cached) return cached;
 
-    const info = await extractImageInfo(normalized);
+    const item = this.cachedItems.find((entry) => normalizePath(entry.absPath) === normalized);
+    const info = await extractMediaInfo(normalized, item);
     this.infoCache.set(normalized, info);
     return info;
   }
@@ -298,8 +321,9 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 }
 
 function previewUriForItem(webview: vscode.Webview, item: GalleryAssetItem): string | null {
-  const renderable = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'apng', 'avif', 'ico', 'lottie']);
-  if (!renderable.has(item.formatFamily)) return null;
+  const renderable = item.mediaType === 'audio' || item.mediaType === 'video' ||
+    ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'apng', 'avif', 'ico', 'lottie'].includes(item.formatFamily);
+  if (!renderable) return null;
   return webview.asWebviewUri(vscode.Uri.file(item.absPath)).toString();
 }
 
@@ -328,7 +352,7 @@ function safeStat(absPath: string): fs.Stats | null {
 function readableBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown';
   if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
   let value = bytes;
   let unitIndex = -1;
   while (value >= 1024 && unitIndex < units.length - 1) {
@@ -336,6 +360,159 @@ function readableBytes(bytes: number): string {
     unitIndex += 1;
   }
   return `${value.toFixed(2)} ${units[unitIndex]}`;
+}
+
+function metadataRow(label: string, value: unknown): MetadataRow {
+  return {
+    label,
+    value: value == null || value === '' ? 'Unknown' : String(value)
+  };
+}
+
+function installHint() {
+  return {
+    text: '安装 MediaInfo 可解析更多数据',
+    actionLabel: '去下载',
+    url: MEDIAINFO_DOWNLOAD_URL
+  };
+}
+
+async function extractMediaInfo(absPath: string, item?: GalleryAssetItem): Promise<MediaMetadataInfo> {
+  const mediaType = item?.mediaType ?? mediaTypeFromPath(absPath);
+  if (mediaType === 'image') {
+    return imageInfoToMediaInfo(await extractImageInfo(absPath));
+  }
+
+  const mediaInfo = await tryMediaInfo(absPath, mediaType);
+  if (mediaInfo) return mediaInfo;
+
+  const ffprobeInfo = await tryFfprobe(absPath, mediaType);
+  if (ffprobeInfo) return ffprobeInfo;
+
+  return fallbackMediaInfo(absPath, mediaType, item);
+}
+
+function imageInfoToMediaInfo(info: ImageInfo): MediaMetadataInfo {
+  return {
+    mediaType: 'image',
+    source: 'Built-in',
+    sections: [
+      {
+        title: 'Image',
+        rows: [
+          metadataRow('width', info.width),
+          metadataRow('height', info.height),
+          metadataRow('color Space', info.colorSpace),
+          metadataRow('chroma subsampling', info.chromaSubsampling),
+          metadataRow('bit depth', info.bitDepth),
+          metadataRow('compression mode', info.compressionMode),
+          metadataRow('stream size', info.streamSize),
+          metadataRow('file size', info.fileSize),
+          metadataRow('format', info.format),
+          metadataRow('abs path', info.absPath)
+        ]
+      }
+    ]
+  };
+}
+
+async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<MediaMetadataInfo | null> {
+  try {
+    const { stdout } = await execFileAsync('MediaInfo', ['--Output=JSON', absPath], { windowsHide: true, timeout: 8000 });
+    const parsed = JSON.parse(stdout);
+    const tracks = Array.isArray(parsed?.media?.track) ? parsed.media.track : [];
+    const sections = tracks
+      .map((track: Record<string, unknown>) => mediaInfoTrackToSection(track))
+      .filter((section: MetadataSection) => section.rows.length > 0);
+    if (!sections.length) return null;
+    return { mediaType, source: 'MediaInfo', sections };
+  } catch {
+    return null;
+  }
+}
+
+function mediaInfoTrackToSection(track: Record<string, unknown>): MetadataSection {
+  const title = String(track['@type'] ?? track.Type ?? 'General');
+  const rows = Object.entries(track)
+    .filter(([key, value]) => !key.startsWith('@') && value != null && typeof value !== 'object')
+    .slice(0, 80)
+    .map(([key, value]) => metadataRow(humanizeKey(key), value));
+  return { title, rows };
+}
+
+async function tryFfprobe(absPath: string, mediaType: MediaType): Promise<MediaMetadataInfo | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'ffprobe',
+      ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', absPath],
+      { windowsHide: true, timeout: 8000, maxBuffer: 2 * 1024 * 1024 }
+    );
+    const parsed = JSON.parse(stdout);
+    const sections: MetadataSection[] = [];
+    if (parsed.format) {
+      sections.push({
+        title: 'General',
+        rows: [
+          metadataRow('Complete name', absPath),
+          metadataRow('Format', parsed.format.format_long_name ?? parsed.format.format_name),
+          metadataRow('File size', parsed.format.size ? readableBytes(Number(parsed.format.size)) : 'Unknown'),
+          metadataRow('Duration', formatSeconds(parsed.format.duration)),
+          metadataRow('Overall bit rate', parsed.format.bit_rate ? `${Math.round(Number(parsed.format.bit_rate) / 1000)} kb/s` : 'Unknown')
+        ]
+      });
+    }
+    for (const stream of parsed.streams ?? []) {
+      const codecType = stream.codec_type === 'audio' ? 'Audio' : stream.codec_type === 'video' ? 'Video' : null;
+      if (!codecType) continue;
+      sections.push({
+        title: codecType,
+        rows: [
+          metadataRow('Format', stream.codec_long_name ?? stream.codec_name),
+          metadataRow('Codec ID', stream.codec_tag_string),
+          metadataRow('Duration', formatSeconds(stream.duration)),
+          metadataRow('Bit rate', stream.bit_rate ? `${Math.round(Number(stream.bit_rate) / 1000)} kb/s` : 'Unknown'),
+          metadataRow('Width', stream.width ? `${stream.width} pixels` : undefined),
+          metadataRow('Height', stream.height ? `${stream.height} pixels` : undefined),
+          metadataRow('Frame rate', stream.avg_frame_rate),
+          metadataRow('Channel(s)', stream.channels ? `${stream.channels} channels` : undefined),
+          metadataRow('Sampling rate', stream.sample_rate ? `${Number(stream.sample_rate) / 1000} kHz` : undefined),
+          metadataRow('Color space', stream.color_space),
+          metadataRow('Chroma subsampling', stream.chroma_location),
+          metadataRow('Bit depth', stream.bits_per_raw_sample || stream.bits_per_sample)
+        ]
+      });
+    }
+    return sections.length ? { mediaType, source: 'ffprobe', sections } : null;
+  } catch {
+    return null;
+  }
+}
+
+function fallbackMediaInfo(absPath: string, mediaType: MediaType, item?: GalleryAssetItem): MediaMetadataInfo {
+  const stat = safeStat(absPath);
+  const generalRows = [
+    metadataRow('Complete name', normalizePath(absPath)),
+    metadataRow('Format', path.extname(absPath).replace('.', '').toUpperCase() || 'Unknown'),
+    metadataRow('File size', stat ? readableBytes(stat.size) : 'Unknown'),
+    metadataRow('Duration', formatMillis(item?.durationMillis)),
+    metadataRow('Overall bit rate', 'Unknown')
+  ];
+  const streamRows = [
+    metadataRow('Format', path.extname(absPath).replace('.', '').toUpperCase() || 'Unknown'),
+    metadataRow('Duration', formatMillis(item?.durationMillis)),
+    metadataRow('Bit rate', 'Unknown'),
+    metadataRow('Compression mode', 'Unknown'),
+    metadataRow('Stream size', stat ? readableBytes(stat.size) : 'Unknown')
+  ];
+  return {
+    mediaType,
+    source: 'Built-in',
+    sections: [
+      { title: 'General', rows: generalRows },
+      { title: mediaType === 'video' ? 'Video' : 'Audio', rows: streamRows }
+    ],
+    installHint: installHint()
+  };
 }
 
 async function extractImageInfo(absPath: string): Promise<ImageInfo> {
@@ -405,6 +582,61 @@ async function extractImageInfo(absPath: string): Promise<ImageInfo> {
   } catch {
     return unknown;
   }
+}
+
+function mediaTypeFromPath(absPath: string): MediaType {
+  const extension = path.extname(absPath).replace('.', '').toLowerCase();
+  if (['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'amr', 'mid', 'midi', 'caf'].includes(extension)) return 'audio';
+  if (['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', '3gp', '3gpp'].includes(extension)) return 'video';
+  return 'image';
+}
+
+function formatMillis(value: number | null | undefined): string {
+  if (!value || value <= 0) return 'Unknown';
+  return formatSeconds(value / 1000);
+}
+
+function formatSeconds(value: unknown): string {
+  const secondsValue = Number(value);
+  if (!Number.isFinite(secondsValue) || secondsValue <= 0) return 'Unknown';
+  const totalMs = Math.round(secondsValue * 1000);
+  const totalSeconds = Math.floor(totalMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const millis = totalMs % 1000;
+  const base = hours > 0
+    ? `${hours} h ${minutes} min ${seconds} s`
+    : minutes > 0
+      ? `${minutes} min ${seconds} s`
+      : `${seconds} s`;
+  return millis > 0 ? `${base} ${millis} ms` : base;
+}
+
+function humanizeKey(key: string): string {
+  return key
+    .replace(/_String\d*$/i, '')
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .trim();
+}
+
+function isInterestingFsPath(fsPath: string): boolean {
+  const normalized = normalizePath(fsPath).toLowerCase();
+  if (hasIgnoredSegment(normalized)) return false;
+  if (normalized.endsWith('/pubspec.yaml')) return true;
+  const mediaLike = /\.(png|jpe?g|webp|gif|bmp|svg|pdf|heic|heif|apng|avif|ico|json|xml|mp3|m4a|aac|wav|ogg|opus|flac|amr|mid|midi|caf|mp4|m4v|mov|webm|mkv|avi|3gp|3gpp)$/i.test(normalized);
+  if (!mediaLike) return false;
+  return normalized.includes('/assets/') ||
+    normalized.includes('/res/') ||
+    normalized.includes('/ios/') ||
+    (normalized.includes('/src/') && normalized.includes('/res/'));
+}
+
+function hasIgnoredSegment(normalizedPath: string): boolean {
+  return normalizedPath.split('/').some((segment) =>
+    ['build', 'out', 'output', 'dist', 'node_modules', '.dart_tool', 'pods', 'deriveddata'].includes(segment)
+  );
 }
 
 async function openResourceByPath(absPath: string): Promise<void> {

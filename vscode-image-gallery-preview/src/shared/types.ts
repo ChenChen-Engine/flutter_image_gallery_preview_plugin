@@ -2,6 +2,8 @@ export type SourceType = 'android_res' | 'flutter_asset' | 'ios_asset';
 
 export type PlatformType = 'android' | 'flutter' | 'ios';
 
+export type MediaType = 'image' | 'audio' | 'video';
+
 export type AssetKind =
   | 'png'
   | 'jpg'
@@ -18,6 +20,25 @@ export type AssetKind =
   | 'apng'
   | 'avif'
   | 'ico'
+  | 'mp3'
+  | 'm4a'
+  | 'aac'
+  | 'wav'
+  | 'ogg'
+  | 'opus'
+  | 'flac'
+  | 'amr'
+  | 'mid'
+  | 'midi'
+  | 'caf'
+  | 'mp4'
+  | 'm4v'
+  | 'mov'
+  | 'webm'
+  | 'mkv'
+  | 'avi'
+  | '3gp'
+  | '3gpp'
   | 'xml'
   | 'other';
 
@@ -32,6 +53,27 @@ export interface ImageInfo {
   fileSize: string;
   format: string;
   absPath: string;
+}
+
+export interface MetadataRow {
+  label: string;
+  value: string;
+}
+
+export interface MetadataSection {
+  title: string;
+  rows: MetadataRow[];
+}
+
+export interface MediaMetadataInfo {
+  mediaType: MediaType;
+  source: string;
+  sections: MetadataSection[];
+  installHint?: {
+    text: string;
+    actionLabel: string;
+    url: string;
+  } | null;
 }
 
 export interface GalleryAssetItem {
@@ -51,6 +93,9 @@ export interface GalleryAssetItem {
   md5: string;
   formatFamily: AssetKind;
   isAnimated: boolean;
+  mediaType: MediaType;
+  durationMillis: number | null;
+  resourceRootPath: string;
   absPath: string;
   relPath: string;
   format: string;
@@ -60,4 +105,5 @@ export interface GalleryAssetItem {
   mtime: number;
   kind: AssetKind;
   imageInfo?: ImageInfo;
+  mediaInfo?: MediaMetadataInfo;
 }

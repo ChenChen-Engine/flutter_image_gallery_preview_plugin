@@ -2,9 +2,9 @@
   const BATCH_SIZE = 160;
   const SCROLL_THRESHOLD = 720;
   const MAX_ACTIVE_ANIMATIONS = 8;
-  const DEFAULT_TILE_SIZE = 132;
+  const DEFAULT_TILE_SIZE = 144;
   const MIN_TILE_SIZE = 96;
-  const MAX_TILE_SIZE = 220;
+  const MAX_TILE_SIZE = 192;
   const TILE_SIZE_STEP = 16;
 
   const bridge = (() => {
@@ -37,7 +37,8 @@
     platform: document.getElementById('platformFilter'),
     project: document.getElementById('projectFilter'),
     module: document.getElementById('moduleFilter'),
-    type: document.getElementById('typeFilter'),
+    mediaType: document.getElementById('mediaTypeFilter'),
+    format: document.getElementById('formatFilter'),
     zoomOut: document.getElementById('zoomOutButton'),
     zoomIn: document.getElementById('zoomInButton'),
     zoomReset: document.getElementById('zoomResetButton'),
@@ -65,7 +66,8 @@
     platform: 'all',
     projectName: 'all',
     moduleName: 'all',
-    type: 'all',
+    mediaType: 'all',
+    format: 'all',
     tileSize: loadTileSize(),
     loading: true,
     collapsed: new Set(loadCollapsedKeys()),
@@ -172,6 +174,13 @@
     return item.width != null && item.height != null ? `${item.width}x${item.height}` : '-';
   }
 
+  function mediaTypeLabel(value) {
+    if (value === 'image') return '图片';
+    if (value === 'audio') return '音频';
+    if (value === 'video') return '视频';
+    return value || 'Unknown';
+  }
+
   function setLoading(loading, message = 'Indexing assets...') {
     state.loading = !!loading;
     elements.refresh.disabled = state.loading;
@@ -209,6 +218,13 @@
 
   function itemsForSelectedProject() {
     return itemsForSelectedPlatform().filter((item) => state.projectName === 'all' || projectKey(item) === state.projectName);
+  }
+
+  function itemsForSelectedModule() {
+    return itemsForSelectedProject().filter((item) => {
+      const moduleHidden = elements.module.classList.contains('hidden');
+      return moduleHidden || state.moduleName === 'all' || moduleKey(item) === state.moduleName;
+    });
   }
 
   function projectKey(item) {
@@ -251,13 +267,35 @@
 
   function updateFilterOptions() {
     const platformItems = itemsForSelectedPlatform();
-    state.projectName = replaceOptions(elements.project, 'All Projects', projectOptions(platformItems), state.projectName);
+    const projectOptionItems = filterByMediaAndFormat(platformItems);
+    state.projectName = replaceOptions(elements.project, 'All Projects', projectOptions(projectOptionItems), state.projectName);
 
     const projectItems = itemsForSelectedProject();
-    state.moduleName = replaceOptions(elements.module, 'All Modules', moduleOptions(projectItems), state.moduleName);
+    const moduleOptionItems = filterByMediaAndFormat(projectItems);
+    state.moduleName = replaceOptions(elements.module, 'All Modules', moduleOptions(moduleOptionItems), state.moduleName);
 
-    state.type = replaceOptions(elements.type, 'All Types', uniqueSorted(state.all, (item) => item.formatFamily), state.type);
+    const moduleItems = itemsForSelectedModule();
+    state.mediaType = replaceOptions(
+      elements.mediaType,
+      'All Media',
+      uniqueSorted(moduleItems, (item) => item.mediaType || 'image').map((value) => ({
+        value,
+        label: mediaTypeLabel(value)
+      })),
+      state.mediaType
+    );
+
+    const mediaItems = moduleItems.filter((item) => state.mediaType === 'all' || (item.mediaType || 'image') === state.mediaType);
+    state.format = replaceOptions(elements.format, 'All Formats', uniqueSorted(mediaItems, (item) => item.formatFamily), state.format);
     updateFilterVisibility();
+  }
+
+  function filterByMediaAndFormat(items) {
+    return items.filter((item) => {
+      const matchesMediaType = state.mediaType === 'all' || (item.mediaType || 'image') === state.mediaType;
+      const matchesFormat = state.format === 'all' || item.formatFamily === state.format;
+      return matchesMediaType && matchesFormat;
+    });
   }
 
   function projectOptions(items) {
@@ -348,8 +386,9 @@
       const matchesProject = state.platform === 'all' || state.projectName === 'all' || projectKey(item) === state.projectName;
       const moduleHidden = elements.module.classList.contains('hidden');
       const matchesModule = state.platform === 'all' || moduleHidden || state.moduleName === 'all' || moduleKey(item) === state.moduleName;
-      const matchesType = state.type === 'all' || item.formatFamily === state.type;
-      return matchesQuery && matchesPlatform && matchesProject && matchesModule && matchesType;
+      const matchesMediaType = state.mediaType === 'all' || (item.mediaType || 'image') === state.mediaType;
+      const matchesFormat = state.format === 'all' || item.formatFamily === state.format;
+      return matchesQuery && matchesPlatform && matchesProject && matchesModule && matchesMediaType && matchesFormat;
     }));
   }
 
@@ -591,7 +630,7 @@
     infoButton.type = 'button';
     infoButton.className = 'corner-button info-button';
     infoButton.textContent = 'i';
-    infoButton.title = '查看图片信息';
+    infoButton.title = '查看媒体信息';
     infoButton.addEventListener('click', (event) => {
       event.stopPropagation();
       showInfoModal(item);
@@ -628,6 +667,16 @@
   }
 
   function appendPreview(container, item) {
+    if (item.renderKind === 'audio') {
+      appendAudioPreview(container, item);
+      return;
+    }
+
+    if (item.renderKind === 'video') {
+      appendVideoPreview(container, item);
+      return;
+    }
+
     if (item.isAnimated && ((item.renderKind === 'image' && item.previewSrc) || item.renderKind === 'lottie')) {
       registerManagedAnimation(container, item);
       return;
@@ -653,6 +702,116 @@
     }
 
     showPlaceholder(container, item);
+  }
+
+  function appendAudioPreview(container, item) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'media-placeholder audio-placeholder';
+    const icon = document.createElement('div');
+    icon.className = 'media-icon';
+    icon.textContent = '♪';
+    const label = document.createElement('div');
+    label.textContent = String(item.formatFamily || 'AUDIO').toUpperCase();
+    const play = document.createElement('span');
+    play.className = 'media-play-button';
+    play.textContent = '▶';
+    play.title = '播放 / 停止';
+    const duration = durationBadge(item);
+
+    let audio = null;
+    play.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!item.previewSrc) return;
+      if (!audio) {
+        audio = new Audio(item.previewSrc);
+        audio.addEventListener('loadedmetadata', () => updateDuration(item, duration, audio.duration));
+        audio.addEventListener('ended', () => {
+          play.textContent = '▶';
+        });
+      }
+      if (audio.paused) {
+        audio.play().then(() => {
+          play.textContent = '■';
+        }).catch(() => showToast('音频播放失败'));
+      } else {
+        audio.pause();
+        audio.currentTime = 0;
+        play.textContent = '▶';
+      }
+    });
+
+    wrapper.appendChild(icon);
+    wrapper.appendChild(label);
+    wrapper.appendChild(play);
+    wrapper.appendChild(duration);
+    container.appendChild(wrapper);
+  }
+
+  function appendVideoPreview(container, item) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'media-placeholder video-placeholder';
+    if (item.previewSrc) {
+      const video = document.createElement('video');
+      video.className = 'thumb-img';
+      video.preload = 'metadata';
+      video.muted = true;
+      video.playsInline = true;
+      video.src = item.previewSrc;
+      video.addEventListener('loadedmetadata', () => updateDuration(item, duration, video.duration));
+      video.addEventListener('error', () => {
+        if (!wrapper.querySelector('.media-icon')) {
+          const icon = document.createElement('div');
+          icon.className = 'media-icon';
+          icon.textContent = '▣';
+          wrapper.prepend(icon);
+        }
+      }, { once: true });
+      wrapper.appendChild(video);
+    } else {
+      const icon = document.createElement('div');
+      icon.className = 'media-icon';
+      icon.textContent = '▣';
+      wrapper.appendChild(icon);
+    }
+
+    const play = document.createElement('span');
+    play.className = 'media-play-button';
+    play.textContent = '▶';
+    play.title = '打开视频';
+    play.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      post('reveal', { absPath: item.absPath });
+    });
+    const duration = durationBadge(item);
+    wrapper.appendChild(play);
+    wrapper.appendChild(duration);
+    container.appendChild(wrapper);
+  }
+
+  function durationBadge(item) {
+    const duration = document.createElement('span');
+    duration.className = 'duration-badge';
+    duration.textContent = item.durationLabel || '';
+    duration.classList.toggle('hidden', !duration.textContent);
+    return duration;
+  }
+
+  function updateDuration(item, badge, seconds) {
+    if (!Number.isFinite(seconds) || seconds <= 0) return;
+    const text = formatDuration(seconds);
+    item.durationLabel = text;
+    badge.textContent = text;
+    badge.classList.remove('hidden');
+  }
+
+  function formatDuration(seconds) {
+    const total = Math.floor(seconds);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}` : `${minutes}:${String(secs).padStart(2, '0')}`;
   }
 
   function renderLottie(host, item) {
@@ -908,7 +1067,7 @@
       ['复制相对路径', () => copyValue('相对路径', item.relPath)],
       ['复制 MD5', () => copyValue('MD5', item.md5)],
       ['打开并定位', () => post('reveal', { absPath: item.absPath })],
-      ['显示图片信息', () => showInfoModal(item)],
+      ['显示媒体信息', () => showInfoModal(item)],
       ['在系统文件管理器中显示', () => post('showInSystem', { absPath: item.absPath })]
     ];
 
@@ -941,16 +1100,18 @@
 
   function fallbackInfo(item) {
     return {
-      width: item.width != null ? String(item.width) : 'Unknown',
-      height: item.height != null ? String(item.height) : 'Unknown',
-      colorSpace: 'Unknown',
-      chromaSubsampling: 'Unknown',
-      bitDepth: 'Unknown',
-      compressionMode: 'Unknown',
-      streamSize: 'Unknown',
-      fileSize: 'Unknown',
-      format: String(item.format || item.formatFamily || 'Unknown').toUpperCase(),
-      absPath: item.absPath || 'Unknown'
+      mediaType: item.mediaType || 'image',
+      source: 'Built-in',
+      sections: [
+        {
+          title: item.mediaType === 'video' ? 'Video' : item.mediaType === 'audio' ? 'Audio' : 'Image',
+          rows: [
+            { label: 'format', value: String(item.format || item.formatFamily || 'Unknown').toUpperCase() },
+            { label: 'duration', value: item.durationLabel || 'Unknown' },
+            { label: 'abs path', value: item.absPath || 'Unknown' }
+          ]
+        }
+      ]
     };
   }
 
@@ -958,10 +1119,10 @@
     state.currentInfoPath = item.absPath;
     elements.modal.classList.remove('hidden');
 
-    const cached = state.infoByPath.get(item.absPath) || item.imageInfo || fallbackInfo(item);
+    const cached = state.infoByPath.get(item.absPath) || item.mediaInfo || item.imageInfo || fallbackInfo(item);
     renderInfo(cached);
 
-    if (!state.infoByPath.has(item.absPath) || !item.imageInfo) {
+    if (!state.infoByPath.has(item.absPath) || (!item.mediaInfo && !item.imageInfo)) {
       post('requestImageInfo', { absPath: item.absPath });
     }
   }
@@ -972,21 +1133,44 @@
   }
 
   function renderInfo(info) {
-    const rows = [
-      ['width', info.width],
-      ['height', info.height],
-      ['color Space', info.colorSpace],
-      ['chroma subsampling', info.chromaSubsampling],
-      ['bit depth', info.bitDepth],
-      ['compression mode', info.compressionMode],
-      ['stream size', info.streamSize],
-      ['file size', info.fileSize],
-      ['format', info.format],
-      ['abs path', info.absPath]
-    ];
-
     elements.infoContent.replaceChildren();
-    for (const [key, value] of rows) {
+    const normalized = normalizeInfo(info);
+    const source = document.createElement('div');
+    source.className = 'info-source';
+    source.textContent = `Source: ${normalized.source || 'Unknown'}`;
+    elements.infoContent.appendChild(source);
+
+    for (const section of normalized.sections) {
+      const sectionNode = document.createElement('section');
+      sectionNode.className = 'info-section';
+      const title = document.createElement('h3');
+      title.className = 'info-section-title';
+      title.textContent = section.title || 'Info';
+      sectionNode.appendChild(title);
+
+      for (const entry of section.rows || []) {
+        sectionNode.appendChild(renderInfoRow(entry.label, entry.value));
+      }
+      elements.infoContent.appendChild(sectionNode);
+    }
+
+    if (normalized.installHint) {
+      const hint = document.createElement('div');
+      hint.className = 'info-install-hint';
+      const text = document.createElement('span');
+      text.textContent = normalized.installHint.text || '安装 MediaInfo 可解析更多数据';
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'info-link';
+      link.textContent = normalized.installHint.actionLabel || '去下载';
+      link.addEventListener('click', () => post('openExternal', { url: normalized.installHint.url }));
+      hint.appendChild(text);
+      hint.appendChild(link);
+      elements.infoContent.appendChild(hint);
+    }
+  }
+
+  function renderInfoRow(key, value) {
       const row = document.createElement('div');
       row.className = 'info-row';
       const keyNode = document.createElement('div');
@@ -997,8 +1181,32 @@
       valueNode.textContent = value == null || value === '' ? 'Unknown' : String(value);
       row.appendChild(keyNode);
       row.appendChild(valueNode);
-      elements.infoContent.appendChild(row);
-    }
+      return row;
+  }
+
+  function normalizeInfo(info) {
+    if (Array.isArray(info?.sections)) return info;
+    return {
+      mediaType: 'image',
+      source: 'Built-in',
+      sections: [
+        {
+          title: 'Image',
+          rows: [
+            { label: 'width', value: info?.width },
+            { label: 'height', value: info?.height },
+            { label: 'color Space', value: info?.colorSpace },
+            { label: 'chroma subsampling', value: info?.chromaSubsampling },
+            { label: 'bit depth', value: info?.bitDepth },
+            { label: 'compression mode', value: info?.compressionMode },
+            { label: 'stream size', value: info?.streamSize },
+            { label: 'file size', value: info?.fileSize },
+            { label: 'format', value: info?.format },
+            { label: 'abs path', value: info?.absPath }
+          ]
+        }
+      ]
+    };
   }
 
   function scheduleFilter() {
@@ -1034,6 +1242,8 @@
     state.platform = elements.platform.value;
     state.projectName = 'all';
     state.moduleName = 'all';
+    state.mediaType = 'all';
+    state.format = 'all';
     updateFilterOptions();
     resetRender();
   });
@@ -1041,17 +1251,30 @@
   elements.project.addEventListener('change', () => {
     state.projectName = elements.project.value;
     state.moduleName = 'all';
+    state.mediaType = 'all';
+    state.format = 'all';
     updateFilterOptions();
     resetRender();
   });
 
   elements.module.addEventListener('change', () => {
     state.moduleName = elements.module.value;
+    state.mediaType = 'all';
+    state.format = 'all';
+    updateFilterOptions();
     resetRender();
   });
 
-  elements.type.addEventListener('change', () => {
-    state.type = elements.type.value;
+  elements.mediaType.addEventListener('change', () => {
+    state.mediaType = elements.mediaType.value;
+    state.format = 'all';
+    updateFilterOptions();
+    resetRender();
+  });
+
+  elements.format.addEventListener('change', () => {
+    state.format = elements.format.value;
+    updateFilterOptions();
     resetRender();
   });
 
@@ -1103,8 +1326,8 @@
     if (msg?.type === 'assets') {
       state.all = Array.isArray(msg.items) ? msg.items : [];
       for (const item of state.all) {
-        if (item.imageInfo) {
-          state.infoByPath.set(item.absPath, item.imageInfo);
+        if (item.mediaInfo || item.imageInfo) {
+          state.infoByPath.set(item.absPath, item.mediaInfo || item.imageInfo);
         }
       }
       setLoading(false, 'Ready');

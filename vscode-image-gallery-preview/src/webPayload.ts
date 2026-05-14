@@ -1,13 +1,15 @@
-import { GalleryAssetItem, ImageInfo } from './shared/types';
+import { GalleryAssetItem, ImageInfo, MediaMetadataInfo } from './shared/types';
 
-export type GalleryRenderKind = 'image' | 'lottie' | 'placeholder';
+export type GalleryRenderKind = 'image' | 'lottie' | 'audio' | 'video' | 'placeholder';
 
 export interface WebviewAssetItem extends GalleryAssetItem {
   fileName: string;
   previewSrc: string | null;
   renderKind: GalleryRenderKind;
   lottieJson?: string | null;
+  durationLabel: string;
   imageInfo?: ImageInfo;
+  mediaInfo?: MediaMetadataInfo;
 }
 
 const BROWSER_IMAGE_FAMILIES = new Set([
@@ -31,6 +33,10 @@ export function toWebviewAssetItem(
   const renderKind: GalleryRenderKind =
     item.formatFamily === 'lottie'
       ? 'lottie'
+      : item.mediaType === 'audio'
+        ? 'audio'
+        : item.mediaType === 'video'
+          ? 'video'
       : previewSrc && BROWSER_IMAGE_FAMILIES.has(item.formatFamily)
         ? 'image'
         : 'placeholder';
@@ -43,8 +49,21 @@ export function toWebviewAssetItem(
     previewSrc,
     renderKind,
     lottieJson,
-    imageInfo: item.imageInfo
+    durationLabel: durationLabel(item.durationMillis),
+    imageInfo: item.imageInfo,
+    mediaInfo: item.mediaInfo
   };
+}
+
+function durationLabel(durationMillis: number | null | undefined): string {
+  if (!durationMillis || durationMillis <= 0) return '';
+  const totalSeconds = Math.floor(durationMillis / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
 function normalizePath(value: string): string {

@@ -43,7 +43,26 @@ object ThumbnailIconProvider {
             AssetKind.LOTTIE,
             AssetKind.VECTOR_XML,
             AssetKind.PDF,
-            AssetKind.XML -> createTypePlaceholder(item.formatFamily, size)
+            AssetKind.XML,
+            AssetKind.MP3,
+            AssetKind.M4A,
+            AssetKind.AAC,
+            AssetKind.WAV,
+            AssetKind.OGG,
+            AssetKind.OPUS,
+            AssetKind.FLAC,
+            AssetKind.AMR,
+            AssetKind.MID,
+            AssetKind.MIDI,
+            AssetKind.CAF,
+            AssetKind.MP4,
+            AssetKind.M4V,
+            AssetKind.MOV,
+            AssetKind.WEBM,
+            AssetKind.MKV,
+            AssetKind.AVI,
+            AssetKind.THREE_GP,
+            AssetKind.THREE_GPP -> createTypePlaceholder(item.formatFamily, size)
 
             AssetKind.OTHER -> AllIcons.FileTypes.Any_type
         }
@@ -199,6 +218,25 @@ object ThumbnailIconProvider {
             AssetKind.VECTOR_XML,
             AssetKind.PDF,
             AssetKind.XML,
+            AssetKind.MP3,
+            AssetKind.M4A,
+            AssetKind.AAC,
+            AssetKind.WAV,
+            AssetKind.OGG,
+            AssetKind.OPUS,
+            AssetKind.FLAC,
+            AssetKind.AMR,
+            AssetKind.MID,
+            AssetKind.MIDI,
+            AssetKind.CAF,
+            AssetKind.MP4,
+            AssetKind.M4V,
+            AssetKind.MOV,
+            AssetKind.WEBM,
+            AssetKind.MKV,
+            AssetKind.AVI,
+            AssetKind.THREE_GP,
+            AssetKind.THREE_GPP,
             AssetKind.OTHER -> false
         }
     }

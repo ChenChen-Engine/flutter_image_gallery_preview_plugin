@@ -3,6 +3,7 @@ package com.yourorg.imagegallerypreview.ui
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.intellij.ide.BrowserUtil
 import com.intellij.ide.actions.RevealFileAction
 import com.intellij.ide.projectView.ProjectView
 import com.intellij.openapi.Disposable
@@ -21,7 +22,7 @@ import com.intellij.ui.jcef.JBCefApp
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefJSQuery
 import com.intellij.util.ui.JBUI
-import com.yourorg.imagegallerypreview.metadata.ImageMetadataExtractor
+import com.yourorg.imagegallerypreview.metadata.MediaMetadataExtractor
 import com.yourorg.imagegallerypreview.model.GalleryAssetItem
 import com.yourorg.imagegallerypreview.service.GalleryIndexService
 import com.yourorg.imagegallerypreview.util.AssetFileUtil
@@ -124,6 +125,9 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
                 ApplicationManager.getApplication().invokeLater { RevealFileAction.openFile(File(absPath)) }
             }
             "requestImageInfo" -> message.string("absPath")?.let(::sendImageInfo)
+            "openExternal" -> message.string("url")?.let { url ->
+                ApplicationManager.getApplication().invokeLater { BrowserUtil.browse(url) }
+            }
         }
 
         return null
@@ -162,7 +166,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             ?: return
 
         ApplicationManager.getApplication().executeOnPooledThread {
-            val info = ImageMetadataExtractor.infoFor(item)
+            val info = MediaMetadataExtractor.infoFor(item)
             sendToWeb(
                 mapOf(
                     "type" to "imageInfo",
