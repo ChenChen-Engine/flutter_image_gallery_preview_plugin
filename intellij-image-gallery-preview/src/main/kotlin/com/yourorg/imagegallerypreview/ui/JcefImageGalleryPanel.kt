@@ -27,6 +27,7 @@ import com.yourorg.imagegallerypreview.model.GalleryAssetItem
 import com.yourorg.imagegallerypreview.service.GalleryIndexService
 import com.yourorg.imagegallerypreview.util.AssetFileUtil
 import java.awt.BorderLayout
+import java.awt.Desktop
 import java.awt.Font
 import java.awt.datatransfer.StringSelection
 import java.io.File
@@ -124,7 +125,13 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             "showInSystem" -> message.string("absPath")?.let { absPath ->
                 ApplicationManager.getApplication().invokeLater { RevealFileAction.openFile(File(absPath)) }
             }
-            "requestImageInfo" -> message.string("absPath")?.let(::sendImageInfo)
+            "requestImageInfo", "requestMediaInfo" -> message.string("absPath")?.let(::sendMediaInfo)
+            "openWithDefaultApp" -> message.string("absPath")?.let { absPath ->
+                ApplicationManager.getApplication().executeOnPooledThread { openWithDefaultApp(absPath) }
+            }
+            "openWithChooser" -> message.string("absPath")?.let { absPath ->
+                ApplicationManager.getApplication().executeOnPooledThread { openWithChooser(absPath) }
+            }
             "openExternal" -> message.string("url")?.let { url ->
                 ApplicationManager.getApplication().invokeLater { BrowserUtil.browse(url) }
             }
@@ -160,7 +167,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         )
     }
 
-    private fun sendImageInfo(absPath: String) {
+    private fun sendMediaInfo(absPath: String) {
         val normalized = AssetFileUtil.normalizePath(absPath)
         val item = latestItems.firstOrNull { AssetFileUtil.normalizePath(it.absPath) == normalized }
             ?: return
@@ -204,6 +211,40 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         PsiManager.getInstance(project).findFile(virtualFile)?.let {
             ProjectView.getInstance(project).select(virtualFile, virtualFile, false)
         }
+    }
+
+    private fun openWithDefaultApp(absPath: String) {
+        val file = File(absPath)
+        if (!file.exists()) return
+        try {
+            if (Desktop.isDesktopSupported()) {
+                Desktop.getDesktop().open(file)
+            } else {
+                RevealFileAction.openFile(file)
+            }
+        } catch (error: Throwable) {
+            logger.warn("Failed to open media with default app: $absPath", error)
+            ApplicationManager.getApplication().invokeLater { RevealFileAction.openFile(file) }
+        }
+    }
+
+    private fun openWithChooser(absPath: String) {
+        val file = File(absPath)
+        if (!file.exists()) return
+        try {
+            if (isWindows()) {
+                ProcessBuilder("rundll32.exe", "shell32.dll,OpenAs_RunDLL", file.absolutePath).start()
+            } else {
+                openWithDefaultApp(absPath)
+            }
+        } catch (error: Throwable) {
+            logger.warn("Failed to open media chooser: $absPath", error)
+            openWithDefaultApp(absPath)
+        }
+    }
+
+    private fun isWindows(): Boolean {
+        return System.getProperty("os.name").orEmpty().lowercase().contains("win")
     }
 
     private fun prepareWebUi(query: JBCefJSQuery): Path {

@@ -15,6 +15,7 @@ import {
   MetadataSection,
   PlatformType
 } from './shared/types';
+import { findMediaInfoExecutable } from './mediaInfoTool';
 import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
 const execFileAsync = promisify(execFile);
@@ -122,13 +123,23 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    if (message?.type === 'requestImageInfo' && typeof message.absPath === 'string') {
+    if ((message?.type === 'requestImageInfo' || message?.type === 'requestMediaInfo') && typeof message.absPath === 'string') {
       const info = await this.loadMediaInfo(message.absPath);
       await this.view?.webview.postMessage({
         type: 'imageInfo',
         absPath: normalizePath(message.absPath),
         info
       });
+      return;
+    }
+
+    if (message?.type === 'openWithDefaultApp' && typeof message.absPath === 'string') {
+      await openWithDefaultApp(message.absPath);
+      return;
+    }
+
+    if (message?.type === 'openWithChooser' && typeof message.absPath === 'string') {
+      await openWithChooser(message.absPath);
       return;
     }
 
@@ -140,33 +151,38 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private async performRefresh(): Promise<void> {
     await this.postLoadingState(true, 'Indexing assets...');
 
-    if (!vscode.workspace.workspaceFolders?.length) {
-      this.cachedItems = [];
-      this.duplicateIndex.clear();
+    try {
+      if (!vscode.workspace.workspaceFolders?.length) {
+        this.cachedItems = [];
+        this.duplicateIndex.clear();
+        await this.postAssets();
+        await this.postLoadingState(false, 'Ready');
+        this.afterRefreshQueue = [];
+        return;
+      }
+
+      const items = vscode.workspace.workspaceFolders.flatMap((folder) =>
+        scanAssets(folder.uri.fsPath).map((item) => ({
+          ...item,
+          absPath: normalizePath(item.absPath),
+          relPath: normalizePath(item.relPath),
+          resourceRootPath: normalizePath(item.resourceRootPath)
+        }))
+      );
+
+      this.cachedItems = items;
+      this.duplicateIndex = this.buildDuplicateIndex(items);
+
       await this.postAssets();
-      await this.postLoadingState(false, 'Ready');
+      await this.postLoadingState(false, `Updated ${new Date().toLocaleTimeString()}`);
+
+      const callbacks = this.afterRefreshQueue.splice(0, this.afterRefreshQueue.length);
+      for (const callback of callbacks) {
+        await callback(items);
+      }
+    } catch (error) {
       this.afterRefreshQueue = [];
-      return;
-    }
-
-    const items = vscode.workspace.workspaceFolders.flatMap((folder) =>
-      scanAssets(folder.uri.fsPath).map((item) => ({
-        ...item,
-        absPath: normalizePath(item.absPath),
-        relPath: normalizePath(item.relPath),
-        resourceRootPath: normalizePath(item.resourceRootPath)
-      }))
-    );
-
-    this.cachedItems = items;
-    this.duplicateIndex = this.buildDuplicateIndex(items);
-
-    await this.postAssets();
-    await this.postLoadingState(false, `Updated ${new Date().toLocaleTimeString()}`);
-
-    const callbacks = this.afterRefreshQueue.splice(0, this.afterRefreshQueue.length);
-    for (const callback of callbacks) {
-      await callback(items);
+      await this.postLoadingState(false, `Failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -417,15 +433,17 @@ function imageInfoToMediaInfo(info: ImageInfo): MediaMetadataInfo {
 }
 
 async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<MediaMetadataInfo | null> {
+  const executable = findMediaInfoExecutable();
+  if (!executable) return null;
   try {
-    const { stdout } = await execFileAsync('MediaInfo', ['--Output=JSON', absPath], { windowsHide: true, timeout: 8000 });
+    const { stdout } = await execFileAsync(executable, ['--Output=JSON', absPath], { windowsHide: true, timeout: 8000 });
     const parsed = JSON.parse(stdout);
     const tracks = Array.isArray(parsed?.media?.track) ? parsed.media.track : [];
     const sections = tracks
       .map((track: Record<string, unknown>) => mediaInfoTrackToSection(track))
       .filter((section: MetadataSection) => section.rows.length > 0);
     if (!sections.length) return null;
-    return { mediaType, source: 'MediaInfo', sections };
+    return { mediaType, source: `MediaInfo (${executable})`, sections };
   } catch {
     return null;
   }
@@ -649,6 +667,23 @@ async function openResourceByPath(absPath: string): Promise<void> {
 async function revealResourceByPath(absPath: string): Promise<void> {
   await openResourceByPath(absPath);
   await vscode.commands.executeCommand('workbench.files.action.showActiveFileInExplorer');
+}
+
+async function openWithDefaultApp(absPath: string): Promise<void> {
+  await vscode.env.openExternal(vscode.Uri.file(absPath));
+}
+
+async function openWithChooser(absPath: string): Promise<void> {
+  if (process.platform === 'win32') {
+    try {
+      execFile('rundll32.exe', ['shell32.dll,OpenAs_RunDLL', absPath], { windowsHide: true }, () => undefined);
+      return;
+    } catch {
+      await openWithDefaultApp(absPath);
+      return;
+    }
+  }
+  await openWithDefaultApp(absPath);
 }
 
 export function activate(context: vscode.ExtensionContext): void {

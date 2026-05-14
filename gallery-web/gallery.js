@@ -44,14 +44,26 @@
     zoomReset: document.getElementById('zoomResetButton'),
     refresh: document.getElementById('refreshButton'),
     status: document.getElementById('statusText'),
-    state: document.getElementById('stateText'),
     root: document.getElementById('galleryRoot'),
     sentinel: document.getElementById('loadMoreSentinel'),
     loading: document.getElementById('loadingOverlay'),
     loadingMessage: document.getElementById('loadingMessage'),
     toast: document.getElementById('toast'),
     modal: document.getElementById('infoModal'),
-    infoContent: document.getElementById('infoContent')
+    infoContent: document.getElementById('infoContent'),
+    videoModal: document.getElementById('videoModal'),
+    videoPlayer: document.getElementById('videoPlayer'),
+    videoTitle: document.getElementById('videoTitle'),
+    videoCenterButton: document.getElementById('videoCenterButton'),
+    videoProgressTrack: document.getElementById('videoProgressTrack'),
+    videoProgressFill: document.getElementById('videoProgressFill'),
+    videoTimeLabel: document.getElementById('videoTimeLabel'),
+    videoRateSelect: document.getElementById('videoRateSelect'),
+    unsupportedModal: document.getElementById('unsupportedModal'),
+    unsupportedMessage: document.getElementById('unsupportedMessage'),
+    openDefaultButton: document.getElementById('openDefaultButton'),
+    openChooserButton: document.getElementById('openChooserButton'),
+    showInSystemButton: document.getElementById('showInSystemButton')
   };
 
   const contextMenu = document.createElement('div');
@@ -82,7 +94,11 @@
     animationUpdateTimer: 0,
     filterTimer: 0,
     scrollTimer: 0,
-    toastTimer: 0
+    toastTimer: 0,
+    currentAudioController: null,
+    unsupportedItem: null,
+    videoDialogItem: null,
+    videoProgressDragging: false
   };
 
   function loadCollapsedKeys() {
@@ -175,9 +191,9 @@
   }
 
   function mediaTypeLabel(value) {
-    if (value === 'image') return '图片';
-    if (value === 'audio') return '音频';
-    if (value === 'video') return '视频';
+    if (value === 'image') return 'Image';
+    if (value === 'audio') return 'Audio';
+    if (value === 'video') return 'Video';
     return value || 'Unknown';
   }
 
@@ -186,7 +202,6 @@
     elements.refresh.disabled = state.loading;
     elements.loading.classList.toggle('visible', state.loading);
     elements.loadingMessage.textContent = message || 'Indexing assets...';
-    elements.state.textContent = state.loading ? message : 'Ready';
   }
 
   function showToast(message) {
@@ -394,13 +409,11 @@
 
   function updateStatus() {
     elements.status.textContent = `Visible ${state.filtered.length} / Indexed ${state.all.length} · Showing ${Math.min(state.rendered, state.filtered.length)}`;
-    if (!state.loading) {
-      elements.state.textContent = state.rendered < state.filtered.length ? 'Scroll to load more' : 'Ready';
-    }
     elements.sentinel.classList.toggle('hidden', state.filtered.length === 0 || state.rendered >= state.filtered.length);
   }
 
   function resetRender() {
+    stopCurrentAudio();
     clearManagedAnimations();
     hideContextMenu();
     state.filtered = filteredItems();
@@ -412,13 +425,35 @@
     if (!state.filtered.length) {
       const empty = document.createElement('div');
       empty.className = 'empty';
-      empty.textContent = state.all.length ? 'No items match current filters' : 'No indexed image resources';
+      empty.textContent = state.all.length ? 'No items match current filters' : 'No indexed media resources';
       elements.root.appendChild(empty);
       updateStatus();
       return;
     }
 
     appendNextBatch();
+  }
+
+  function renderScanFailure(message) {
+    stopCurrentAudio();
+    clearManagedAnimations();
+    hideContextMenu();
+    elements.root.replaceChildren();
+    const failure = document.createElement('div');
+    failure.className = 'empty scan-failure';
+    const text = document.createElement('div');
+    text.textContent = message || '扫描失败';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'primary-button';
+    retry.textContent = '重新扫描';
+    retry.addEventListener('click', () => {
+      setLoading(true, 'Indexing assets...');
+      post('refresh');
+    });
+    failure.appendChild(text);
+    failure.appendChild(retry);
+    elements.root.appendChild(failure);
   }
 
   function appendNextBatch() {
@@ -443,7 +478,7 @@
       state.rendered = end;
       updateStatus();
       scheduleAnimationUpdate();
-      if (isNearBottom()) {
+      if (shouldAppendMore()) {
         window.setTimeout(appendNextBatch, 0);
       }
     });
@@ -495,6 +530,7 @@
         section.classList.toggle('collapsed', state.collapsed.has(key));
         toggle.textContent = state.collapsed.has(key) ? '▶' : '▼';
         scheduleAnimationUpdate();
+        window.setTimeout(ensureViewportFilled, 0);
       });
     }
 
@@ -718,26 +754,28 @@
     play.title = '播放 / 停止';
     const duration = durationBadge(item);
 
-    let audio = null;
+    let controller = null;
     play.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (!item.previewSrc) return;
-      if (!audio) {
-        audio = new Audio(item.previewSrc);
-        audio.addEventListener('loadedmetadata', () => updateDuration(item, duration, audio.duration));
-        audio.addEventListener('ended', () => {
-          play.textContent = '▶';
-        });
+      if (!item.previewSrc) {
+        showUnsupportedMedia(item, 'audio');
+        return;
       }
-      if (audio.paused) {
-        audio.play().then(() => {
-          play.textContent = '■';
-        }).catch(() => showToast('音频播放失败'));
+      if (!controller) {
+        controller = createAudioController(item, play, duration);
+      }
+      if (controller.audio.paused) {
+        stopCurrentAudio(controller);
+        controller.audio.play().then(() => {
+          state.currentAudioController = controller;
+          controller.setPlaying(true);
+        }).catch(() => {
+          controller.setPlaying(false);
+          showUnsupportedMedia(item, 'audio');
+        });
       } else {
-        audio.pause();
-        audio.currentTime = 0;
-        play.textContent = '▶';
+        controller.stop(true);
       }
     });
 
@@ -758,8 +796,17 @@
       video.muted = true;
       video.playsInline = true;
       video.src = item.previewSrc;
-      video.addEventListener('loadedmetadata', () => updateDuration(item, duration, video.duration));
+      video.addEventListener('loadedmetadata', () => {
+        wrapper.classList.add('has-video-preview');
+        updateDuration(item, duration, video.duration);
+        try {
+          video.currentTime = Math.min(0.1, Math.max(0, video.duration || 0));
+        } catch {
+          // keep first decoded frame if seeking is unsupported
+        }
+      });
       video.addEventListener('error', () => {
+        wrapper.classList.remove('has-video-preview');
         if (!wrapper.querySelector('.media-icon')) {
           const icon = document.createElement('div');
           icon.className = 'media-icon';
@@ -778,16 +825,71 @@
     const play = document.createElement('span');
     play.className = 'media-play-button';
     play.textContent = '▶';
-    play.title = '打开视频';
+    play.title = '播放视频';
     play.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      post('reveal', { absPath: item.absPath });
+      openVideoDialog(item);
     });
     const duration = durationBadge(item);
     wrapper.appendChild(play);
     wrapper.appendChild(duration);
     container.appendChild(wrapper);
+  }
+
+  function createAudioController(item, playButton, badge) {
+    const audio = new Audio(item.previewSrc);
+    const controller = {
+      audio,
+      item,
+      playButton,
+      badge,
+      setPlaying(playing) {
+        playButton.textContent = playing ? '■' : '▶';
+        if (playing) updateAudioProgress(controller);
+      },
+      stop(reset) {
+        audio.pause();
+        if (reset) {
+          try {
+            audio.currentTime = 0;
+          } catch {
+            // ignore unsupported seek
+          }
+        }
+        controller.setPlaying(false);
+        updateAudioProgress(controller);
+        if (state.currentAudioController === controller) {
+          state.currentAudioController = null;
+        }
+      }
+    };
+
+    audio.addEventListener('loadedmetadata', () => {
+      updateDuration(item, badge, audio.duration);
+      updateAudioProgress(controller);
+    });
+    audio.addEventListener('timeupdate', () => updateAudioProgress(controller));
+    audio.addEventListener('ended', () => controller.stop(true));
+    audio.addEventListener('error', () => {
+      controller.setPlaying(false);
+      showUnsupportedMedia(item, 'audio');
+    });
+    return controller;
+  }
+
+  function stopCurrentAudio(exceptController = null) {
+    const current = state.currentAudioController;
+    if (current && current !== exceptController) {
+      current.stop(true);
+    }
+  }
+
+  function updateAudioProgress(controller) {
+    const current = Number.isFinite(controller.audio.currentTime) ? controller.audio.currentTime : 0;
+    const total = Number.isFinite(controller.audio.duration) && controller.audio.duration > 0 ? controller.audio.duration : durationSeconds(controller.item);
+    controller.badge.textContent = `${formatClock(current)}/${formatClock(total)}`;
+    controller.badge.classList.remove('hidden');
   }
 
   function durationBadge(item) {
@@ -806,12 +908,111 @@
     badge.classList.remove('hidden');
   }
 
+  function durationSeconds(item) {
+    if (Number.isFinite(item.durationMillis) && item.durationMillis > 0) return item.durationMillis / 1000;
+    if (item.durationLabel) return parseDurationLabel(item.durationLabel);
+    return 0;
+  }
+
+  function parseDurationLabel(label) {
+    const parts = String(label || '').split(':').map((part) => Number(part));
+    if (parts.some((part) => !Number.isFinite(part))) return 0;
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return parts[0] || 0;
+  }
+
   function formatDuration(seconds) {
     const total = Math.floor(seconds);
     const hours = Math.floor(total / 3600);
     const minutes = Math.floor((total % 3600) / 60);
     const secs = total % 60;
     return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}` : `${minutes}:${String(secs).padStart(2, '0')}`;
+  }
+
+  function formatClock(seconds) {
+    const safe = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+    const hours = Math.floor(safe / 3600);
+    const minutes = Math.floor((safe % 3600) / 60);
+    const secs = safe % 60;
+    if (hours > 0) {
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+    return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+
+  function openVideoDialog(item) {
+    if (!item.previewSrc) {
+      showUnsupportedMedia(item, 'video');
+      return;
+    }
+    stopCurrentAudio();
+    state.videoDialogItem = item;
+    elements.videoTitle.textContent = fileNameOf(item);
+    elements.videoPlayer.src = item.previewSrc;
+    elements.videoPlayer.loop = false;
+    elements.videoPlayer.playbackRate = Number(elements.videoRateSelect.value || 1);
+    elements.videoModal.classList.remove('hidden');
+    elements.videoPlayer.load();
+    updateVideoProgress();
+    elements.videoPlayer.play().catch(() => {
+      showUnsupportedMedia(item, 'video');
+    });
+  }
+
+  function closeVideoDialog() {
+    elements.videoPlayer.pause();
+    elements.videoPlayer.removeAttribute('src');
+    elements.videoPlayer.load();
+    elements.videoModal.classList.add('hidden');
+    state.videoDialogItem = null;
+    updateVideoProgress();
+  }
+
+  function toggleVideoPlayback() {
+    if (!state.videoDialogItem) return;
+    if (elements.videoPlayer.paused) {
+      elements.videoPlayer.play().catch(() => showUnsupportedMedia(state.videoDialogItem, 'video'));
+    } else {
+      elements.videoPlayer.pause();
+    }
+  }
+
+  function updateVideoProgress() {
+    const video = elements.videoPlayer;
+    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : durationSeconds(state.videoDialogItem || {});
+    const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    const percent = duration > 0 ? Math.max(0, Math.min(100, (current / duration) * 100)) : 0;
+    elements.videoProgressFill.style.width = `${percent}%`;
+    elements.videoTimeLabel.textContent = `${formatClock(current)} / ${formatClock(duration)}`;
+    elements.videoCenterButton.textContent = video.paused ? '▶' : '❚❚';
+    elements.videoPlayer.closest('.video-stage')?.classList.toggle('playing', !video.paused && !video.ended);
+  }
+
+  function seekVideoFromEvent(event) {
+    const rect = elements.videoProgressTrack.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+    const duration = elements.videoPlayer.duration;
+    if (Number.isFinite(duration) && duration > 0) {
+      elements.videoPlayer.currentTime = ratio * duration;
+      updateVideoProgress();
+    }
+  }
+
+  function showUnsupportedMedia(item, mediaType) {
+    state.unsupportedItem = item;
+    const format = String(item?.formatFamily || item?.format || '').toUpperCase() || 'Unknown';
+    elements.unsupportedMessage.textContent = `暂不支持播放该格式${mediaType === 'video' ? '视频' : '音频'}：${format}`;
+    elements.unsupportedModal.classList.remove('hidden');
+  }
+
+  function closeUnsupportedModal() {
+    state.unsupportedItem = null;
+    elements.unsupportedModal.classList.add('hidden');
+  }
+
+  function unsupportedPath() {
+    return state.unsupportedItem?.absPath || '';
   }
 
   function renderLottie(host, item) {
@@ -1123,7 +1324,7 @@
     renderInfo(cached);
 
     if (!state.infoByPath.has(item.absPath) || (!item.mediaInfo && !item.imageInfo)) {
-      post('requestImageInfo', { absPath: item.absPath });
+      post('requestMediaInfo', { absPath: item.absPath });
     }
   }
 
@@ -1224,11 +1425,22 @@
     return scrollTop + viewport >= height - SCROLL_THRESHOLD;
   }
 
+  function shouldAppendMore() {
+    if (state.rendered >= state.filtered.length) return false;
+    const viewport = window.innerHeight || document.documentElement.clientHeight || 0;
+    const height = document.documentElement.scrollHeight || document.body.scrollHeight || 0;
+    return height <= viewport + 80 || isNearBottom();
+  }
+
+  function ensureViewportFilled() {
+    if (shouldAppendMore()) appendNextBatch();
+  }
+
   function onScroll() {
     window.clearTimeout(state.scrollTimer);
     state.scrollTimer = window.setTimeout(() => {
       hideContextMenu();
-      if (isNearBottom()) appendNextBatch();
+      if (shouldAppendMore()) appendNextBatch();
       scheduleAnimationUpdate();
     }, 80);
   }
@@ -1295,15 +1507,87 @@
     post('refresh');
   });
 
+  function initializeVideoRates() {
+    const rates = [0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
+    elements.videoRateSelect.replaceChildren();
+    for (const rate of rates) {
+      const option = document.createElement('option');
+      option.value = String(rate);
+      option.textContent = `${rate}x`;
+      if (rate === 1) option.selected = true;
+      elements.videoRateSelect.appendChild(option);
+    }
+  }
+
   elements.modal.addEventListener('click', (event) => {
     if (event.target.closest('[data-close-modal]')) {
       closeInfoModal();
     }
   });
 
+  elements.videoModal.addEventListener('click', (event) => {
+    if (event.target.closest('[data-close-video]')) {
+      closeVideoDialog();
+      return;
+    }
+    if (event.target === elements.videoPlayer || event.target === elements.videoCenterButton) {
+      event.preventDefault();
+      toggleVideoPlayback();
+    }
+  });
+
+  elements.videoPlayer.addEventListener('play', updateVideoProgress);
+  elements.videoPlayer.addEventListener('pause', updateVideoProgress);
+  elements.videoPlayer.addEventListener('ended', updateVideoProgress);
+  elements.videoPlayer.addEventListener('timeupdate', updateVideoProgress);
+  elements.videoPlayer.addEventListener('loadedmetadata', updateVideoProgress);
+  elements.videoPlayer.addEventListener('error', () => {
+    if (state.videoDialogItem) showUnsupportedMedia(state.videoDialogItem, 'video');
+  });
+  elements.videoRateSelect.addEventListener('change', () => {
+    elements.videoPlayer.playbackRate = Number(elements.videoRateSelect.value || 1);
+  });
+  elements.videoProgressTrack.addEventListener('pointerdown', (event) => {
+    state.videoProgressDragging = true;
+    elements.videoProgressTrack.classList.add('dragging');
+    elements.videoProgressTrack.setPointerCapture?.(event.pointerId);
+    seekVideoFromEvent(event);
+  });
+  elements.videoProgressTrack.addEventListener('pointermove', (event) => {
+    if (state.videoProgressDragging) seekVideoFromEvent(event);
+  });
+  elements.videoProgressTrack.addEventListener('pointerup', (event) => {
+    if (state.videoProgressDragging) seekVideoFromEvent(event);
+    state.videoProgressDragging = false;
+    elements.videoProgressTrack.classList.remove('dragging');
+  });
+
+  elements.unsupportedModal.addEventListener('click', (event) => {
+    if (event.target.closest('[data-close-unsupported]')) {
+      closeUnsupportedModal();
+    }
+  });
+  elements.openDefaultButton.addEventListener('click', () => {
+    const absPath = unsupportedPath();
+    if (absPath) post('openWithDefaultApp', { absPath });
+    closeUnsupportedModal();
+  });
+  elements.openChooserButton.addEventListener('click', () => {
+    const absPath = unsupportedPath();
+    if (absPath) post('openWithChooser', { absPath });
+    closeUnsupportedModal();
+  });
+  elements.showInSystemButton.addEventListener('click', () => {
+    const absPath = unsupportedPath();
+    if (absPath) post('showInSystem', { absPath });
+    closeUnsupportedModal();
+  });
+
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       closeInfoModal();
+      closeUnsupportedModal();
+      if (!elements.videoModal.classList.contains('hidden')) closeVideoDialog();
       hideContextMenu();
     }
   });
@@ -1320,6 +1604,9 @@
 
     if (msg?.type === 'loadingState') {
       setLoading(!!msg.loading, msg.message || 'Indexing assets...');
+      if (!msg.loading && normalizeText(msg.message).includes('failed')) {
+        renderScanFailure(msg.message || '扫描失败');
+      }
       return;
     }
 
@@ -1330,7 +1617,7 @@
           state.infoByPath.set(item.absPath, item.mediaInfo || item.imageInfo);
         }
       }
-      setLoading(false, 'Ready');
+      setLoading(false, '');
       updateFilterOptions();
       resetRender();
       return;
@@ -1349,6 +1636,7 @@
     }
   };
 
+  initializeVideoRates();
   applyTileSize();
   setLoading(true, 'Indexing assets...');
   post('ready');

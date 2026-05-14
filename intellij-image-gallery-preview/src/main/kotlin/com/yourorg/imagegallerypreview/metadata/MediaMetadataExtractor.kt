@@ -56,7 +56,8 @@ object MediaMetadataExtractor {
     }
 
     private fun tryMediaInfo(file: File, mediaType: String): MediaMetadataInfo? {
-        val output = runCommand(listOf("MediaInfo", "--Output=JSON", file.absolutePath)) ?: return null
+        val executable = findMediaInfoExecutable() ?: return null
+        val output = runCommand(listOf(executable, "--Output=JSON", file.absolutePath)) ?: return null
         val root = runCatching { JsonParser.parseString(output).asJsonObject }.getOrNull() ?: return null
         val tracks = root.getAsJsonObject("media")?.getAsJsonArray("track") ?: return null
         val sections = tracks.mapNotNull { element ->
@@ -70,7 +71,7 @@ object MediaMetadataExtractor {
                 .toList()
             if (rows.isEmpty()) null else MetadataSection(title, rows)
         }
-        return if (sections.isEmpty()) null else MediaMetadataInfo(mediaType, "MediaInfo", sections)
+        return if (sections.isEmpty()) null else MediaMetadataInfo(mediaType, "MediaInfo ($executable)", sections)
     }
 
     private fun tryFfprobe(file: File, mediaType: String): MediaMetadataInfo? {
@@ -182,6 +183,48 @@ object MediaMetadataExtractor {
         } catch (_: Throwable) {
             null
         }
+    }
+
+    internal fun findMediaInfoExecutable(
+        env: Map<String, String> = System.getenv(),
+        pathExists: (String) -> Boolean = { candidate -> File(candidate).exists() },
+        pathExecutable: (String) -> Boolean = { candidate -> File(candidate).canExecute() },
+        osName: String = System.getProperty("os.name").orEmpty()
+    ): String? {
+        env["MEDIAINFO_PATH"]
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { configured ->
+                if (pathExists(configured)) return configured
+            }
+
+        val pathSeparator = File.pathSeparatorChar
+        val pathExts = if (osName.lowercase(Locale.ROOT).contains("win")) {
+            listOf("", ".exe", ".cmd", ".bat")
+        } else {
+            listOf("")
+        }
+        val commandNames = listOf("MediaInfo", "MediaInfo.exe", "mediainfo")
+        val pathDirs = env["PATH"].orEmpty().split(pathSeparator).filter { it.isNotBlank() }
+        for (dir in pathDirs) {
+            for (name in commandNames) {
+                val candidates = if (name.contains('.')) listOf(name) else pathExts.map { "$name$it" }
+                for (candidateName in candidates) {
+                    val candidate = File(dir, candidateName).absolutePath
+                    if (pathExists(candidate) && pathExecutable(candidate)) return candidate
+                }
+            }
+        }
+
+        if (osName.lowercase(Locale.ROOT).contains("win")) {
+            val commonPaths = listOf(
+                "C:\\Program Files\\MediaInfo\\MediaInfo.exe",
+                "C:\\Program Files (x86)\\MediaInfo\\MediaInfo.exe"
+            )
+            return commonPaths.firstOrNull { pathExists(it) }
+        }
+
+        return null
     }
 
     private fun stringValue(json: JsonObject, vararg keys: String): String {
