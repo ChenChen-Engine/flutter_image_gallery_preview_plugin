@@ -16,8 +16,11 @@ suite('web payload', () => {
     assert.strictEqual(webItem.platform, 'android');
     assert.strictEqual(webItem.projectName, 'demo');
     assert.strictEqual(webItem.projectPath, 'C:/demo');
+    assert.strictEqual(webItem.projectRelPath, '.');
     assert.strictEqual(webItem.isPrimaryProject, true);
     assert.strictEqual(webItem.moduleName, 'app');
+    assert.strictEqual(webItem.modulePath, 'C:/demo/app');
+    assert.strictEqual(webItem.moduleRelPath, './app');
     assert.strictEqual(webItem.isPrimaryModule, true);
     assert.strictEqual(webItem.groupPath, 'res/drawable');
     assert.strictEqual(webItem.isAnimated, false);
@@ -31,8 +34,11 @@ function asset(formatFamily: GalleryAssetItem['formatFamily']): GalleryAssetItem
     workspaceKind: 'android',
     projectName: 'demo',
     projectPath: 'C:/demo',
+    projectRelPath: '.',
     isPrimaryProject: true,
     moduleName: 'app',
+    modulePath: 'C:/demo/app',
+    moduleRelPath: './app',
     isPrimaryModule: true,
     groupPath: 'res/drawable',
     copyToken: 'R.drawable.icon',

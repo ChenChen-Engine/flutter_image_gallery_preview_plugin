@@ -40,8 +40,11 @@ export interface GalleryAssetItem {
   workspaceKind: PlatformType | 'mixed' | 'unknown';
   projectName: string;
   projectPath: string;
+  projectRelPath: string;
   isPrimaryProject: boolean;
   moduleName: string;
+  modulePath: string;
+  moduleRelPath: string;
   isPrimaryModule: boolean;
   groupPath: string;
   copyToken: string;

@@ -2,6 +2,10 @@
   const BATCH_SIZE = 160;
   const SCROLL_THRESHOLD = 720;
   const MAX_ACTIVE_ANIMATIONS = 8;
+  const DEFAULT_TILE_SIZE = 132;
+  const MIN_TILE_SIZE = 96;
+  const MAX_TILE_SIZE = 220;
+  const TILE_SIZE_STEP = 16;
 
   const bridge = (() => {
     if (typeof acquireVsCodeApi === 'function') {
@@ -34,6 +38,9 @@
     project: document.getElementById('projectFilter'),
     module: document.getElementById('moduleFilter'),
     type: document.getElementById('typeFilter'),
+    zoomOut: document.getElementById('zoomOutButton'),
+    zoomIn: document.getElementById('zoomInButton'),
+    zoomReset: document.getElementById('zoomResetButton'),
     refresh: document.getElementById('refreshButton'),
     status: document.getElementById('statusText'),
     state: document.getElementById('stateText'),
@@ -59,6 +66,7 @@
     projectName: 'all',
     moduleName: 'all',
     type: 'all',
+    tileSize: loadTileSize(),
     loading: true,
     collapsed: new Set(loadCollapsedKeys()),
     sectionNodes: new Map(),
@@ -91,6 +99,41 @@
     } catch {
       // ignore
     }
+  }
+
+  function loadTileSize() {
+    try {
+      const raw = Number(window.localStorage?.getItem('imageGalleryPreview.tileSize'));
+      return clampTileSize(Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TILE_SIZE);
+    } catch {
+      return DEFAULT_TILE_SIZE;
+    }
+  }
+
+  function saveTileSize() {
+    try {
+      window.localStorage?.setItem('imageGalleryPreview.tileSize', String(state.tileSize));
+    } catch {
+      // ignore
+    }
+  }
+
+  function clampTileSize(value) {
+    return Math.max(MIN_TILE_SIZE, Math.min(MAX_TILE_SIZE, value));
+  }
+
+  function applyTileSize() {
+    document.documentElement.style.setProperty('--tile-min', `${state.tileSize}px`);
+    elements.zoomOut.disabled = state.tileSize <= MIN_TILE_SIZE;
+    elements.zoomIn.disabled = state.tileSize >= MAX_TILE_SIZE;
+    elements.zoomReset.disabled = state.tileSize === DEFAULT_TILE_SIZE;
+    scheduleAnimationUpdate();
+  }
+
+  function setTileSize(value) {
+    state.tileSize = clampTileSize(value);
+    saveTileSize();
+    applyTileSize();
   }
 
   function post(type, payload = {}) {
@@ -149,8 +192,12 @@
   function sortedItems(items) {
     return [...items].sort((left, right) => (
       platformOrder(left.platform) - platformOrder(right.platform) ||
+      Number(!!right.isPrimaryProject) - Number(!!left.isPrimaryProject) ||
       String(left.projectName || '').localeCompare(String(right.projectName || '')) ||
+      String(left.projectRelPath || '').localeCompare(String(right.projectRelPath || '')) ||
+      Number(!!right.isPrimaryModule) - Number(!!left.isPrimaryModule) ||
       String(left.moduleName || '').localeCompare(String(right.moduleName || '')) ||
+      String(left.moduleRelPath || '').localeCompare(String(right.moduleRelPath || '')) ||
       normalizedGroupPath(left.groupPath).localeCompare(normalizedGroupPath(right.groupPath)) ||
       fileNameOf(left).localeCompare(fileNameOf(right))
     ));
@@ -161,7 +208,15 @@
   }
 
   function itemsForSelectedProject() {
-    return itemsForSelectedPlatform().filter((item) => state.projectName === 'all' || item.projectName === state.projectName);
+    return itemsForSelectedPlatform().filter((item) => state.projectName === 'all' || projectKey(item) === state.projectName);
+  }
+
+  function projectKey(item) {
+    return item.projectPath || item.projectName || '';
+  }
+
+  function moduleKey(item) {
+    return item.modulePath || item.moduleName || '';
   }
 
   function uniqueSorted(items, selector) {
@@ -184,10 +239,13 @@
       const option = document.createElement('option');
       option.value = descriptor.value;
       option.textContent = descriptor.label || descriptor.value;
+      if (descriptor.title) option.title = descriptor.title;
       select.appendChild(option);
     }
 
     select.value = safeCurrent;
+    const selectedDescriptor = descriptors.find((descriptor) => descriptor.value === safeCurrent);
+    select.title = selectedDescriptor?.title || '';
     return safeCurrent;
   }
 
@@ -203,37 +261,66 @@
   }
 
   function projectOptions(items) {
-    const byName = new Map();
+    const byKey = new Map();
     for (const item of items) {
       if (!item.projectName) continue;
-      const current = byName.get(item.projectName) || { value: item.projectName, primary: false };
+      const key = projectKey(item);
+      const current = byKey.get(key) || {
+        value: key,
+        name: item.projectName,
+        relPath: item.projectRelPath || '.',
+        primary: false
+      };
       current.primary = current.primary || !!item.isPrimaryProject;
-      byName.set(item.projectName, current);
+      byKey.set(key, current);
     }
-    return [...byName.values()]
-      .sort((left, right) => Number(right.primary) - Number(left.primary) || left.value.localeCompare(right.value))
+    const nameCounts = countOptionNames(byKey);
+    return [...byKey.values()]
+      .sort((left, right) => Number(right.primary) - Number(left.primary) || left.name.localeCompare(right.name) || left.relPath.localeCompare(right.relPath))
       .map((entry) => ({
         value: entry.value,
-        label: entry.primary ? `${entry.value}（主项目）` : entry.value,
-        primary: entry.primary
+        label: optionLabel(entry.name, entry.relPath, !!entry.primary, '主项目', (nameCounts.get(entry.name) || 0) > 1),
+        primary: entry.primary,
+        title: entry.relPath
       }));
   }
 
   function moduleOptions(items) {
-    const byName = new Map();
+    const byKey = new Map();
     for (const item of items) {
       if (!item.moduleName) continue;
-      const current = byName.get(item.moduleName) || { value: item.moduleName, primary: false };
+      const key = moduleKey(item);
+      const current = byKey.get(key) || {
+        value: key,
+        name: item.moduleName,
+        relPath: item.moduleRelPath || '.',
+        primary: false
+      };
       current.primary = current.primary || !!item.isPrimaryModule || item.moduleName.toLowerCase() === 'app';
-      byName.set(item.moduleName, current);
+      byKey.set(key, current);
     }
-    return [...byName.values()]
-      .sort((left, right) => Number(right.primary) - Number(left.primary) || left.value.localeCompare(right.value))
+    const nameCounts = countOptionNames(byKey);
+    return [...byKey.values()]
+      .sort((left, right) => Number(right.primary) - Number(left.primary) || left.name.localeCompare(right.name) || left.relPath.localeCompare(right.relPath))
       .map((entry) => ({
         value: entry.value,
-        label: entry.primary ? `${entry.value}（主模块）` : entry.value,
-        primary: entry.primary
+        label: optionLabel(entry.name, entry.relPath, !!entry.primary, '主模块', (nameCounts.get(entry.name) || 0) > 1),
+        primary: entry.primary,
+        title: entry.relPath
       }));
+  }
+
+  function optionLabel(name, relPath, primary, primaryText, duplicated) {
+    const suffix = duplicated && relPath && relPath !== '.' ? ` · ${relPath}` : '';
+    return `${name}${suffix}${primary ? `（${primaryText}）` : ''}`;
+  }
+
+  function countOptionNames(byKey) {
+    const counts = new Map();
+    for (const entry of byKey.values()) {
+      counts.set(entry.name, (counts.get(entry.name) || 0) + 1);
+    }
+    return counts;
   }
 
   function updateFilterVisibility() {
@@ -245,7 +332,7 @@
 
     elements.project.classList.remove('hidden');
     if (state.platform === 'ios') {
-      const moduleCount = uniqueSorted(itemsForSelectedProject(), (item) => item.moduleName).length;
+      const moduleCount = uniqueSorted(itemsForSelectedProject(), moduleKey).length;
       elements.module.classList.toggle('hidden', moduleCount <= 1);
     } else {
       elements.module.classList.remove('hidden');
@@ -258,9 +345,9 @@
       const searchText = normalizeText(`${fileNameOf(item)} ${item.relPath || ''} ${item.md5 || ''}`);
       const matchesQuery = !query || searchText.includes(query);
       const matchesPlatform = state.platform === 'all' || item.platform === state.platform;
-      const matchesProject = state.platform === 'all' || state.projectName === 'all' || item.projectName === state.projectName;
+      const matchesProject = state.platform === 'all' || state.projectName === 'all' || projectKey(item) === state.projectName;
       const moduleHidden = elements.module.classList.contains('hidden');
-      const matchesModule = state.platform === 'all' || moduleHidden || state.moduleName === 'all' || item.moduleName === state.moduleName;
+      const matchesModule = state.platform === 'all' || moduleHidden || state.moduleName === 'all' || moduleKey(item) === state.moduleName;
       const matchesType = state.type === 'all' || item.formatFamily === state.type;
       return matchesQuery && matchesPlatform && matchesProject && matchesModule && matchesType;
     }));
@@ -332,18 +419,20 @@
     if (existing) return existing;
 
     const isPlatform = level === 'platform';
+    const canCollapse = !isPlatform || state.platform === 'all';
     const section = document.createElement('section');
     section.className = `section ${className}`;
     section.dataset.key = key;
-    section.classList.toggle('collapsed', !isPlatform && state.collapsed.has(key));
+    section.classList.toggle('collapsible', canCollapse);
+    section.classList.toggle('collapsed', canCollapse && state.collapsed.has(key));
 
-    const header = document.createElement(isPlatform ? 'div' : 'button');
-    if (!isPlatform) header.type = 'button';
+    const header = document.createElement(canCollapse ? 'button' : 'div');
+    if (canCollapse) header.type = 'button';
     header.className = 'section-header';
 
     const toggle = document.createElement('span');
     toggle.className = 'group-toggle';
-    toggle.textContent = isPlatform ? '◆' : (state.collapsed.has(key) ? '▶' : '▼');
+    toggle.textContent = canCollapse ? (state.collapsed.has(key) ? '▶' : '▼') : '◆';
 
     const label = document.createElement('span');
     label.className = 'section-title';
@@ -356,7 +445,7 @@
     header.appendChild(toggle);
     header.appendChild(label);
     header.appendChild(count);
-    if (!isPlatform) {
+    if (canCollapse) {
       header.addEventListener('click', () => {
         if (state.collapsed.has(key)) {
           state.collapsed.delete(key);
@@ -387,9 +476,9 @@
       const directory = normalizedGroupPath(item.groupPath);
       const keys = [
         sectionKey('platform', [item.platform]),
-        sectionKey('project', [item.platform, item.projectName]),
-        sectionKey('module', [item.platform, item.projectName, item.moduleName]),
-        sectionKey('directory', [item.platform, item.projectName, item.moduleName, directory])
+        sectionKey('project', [item.platform, projectKey(item)]),
+        sectionKey('module', [item.platform, projectKey(item), moduleKey(item)]),
+        sectionKey('directory', [item.platform, projectKey(item), moduleKey(item), directory])
       ];
       for (const key of keys) {
         state.groupCounts.set(key, (state.groupCounts.get(key) || 0) + 1);
@@ -412,28 +501,28 @@
       'platform'
     );
 
-    const projectKey = sectionKey('project', [item.platform, item.projectName]);
+    const projectSectionKey = sectionKey('project', [item.platform, projectKey(item)]);
     const projectNode = ensureSection(
       'project',
       item.projectName || 'Unknown Project',
-      groupCount(projectKey),
+      groupCount(projectSectionKey),
       platformNode.body,
-      projectKey,
+      projectSectionKey,
       'project'
     );
 
-    const moduleKey = sectionKey('module', [item.platform, item.projectName, item.moduleName]);
+    const moduleSectionKey = sectionKey('module', [item.platform, projectKey(item), moduleKey(item)]);
     const moduleNode = ensureSection(
       'module',
       item.moduleName || 'Unknown Module',
-      groupCount(moduleKey),
+      groupCount(moduleSectionKey),
       projectNode.body,
-      moduleKey,
+      moduleSectionKey,
       'module'
     );
 
     const directory = normalizedGroupPath(item.groupPath);
-    const directoryKey = sectionKey('directory', [item.platform, item.projectName, item.moduleName, directory]);
+    const directoryKey = sectionKey('directory', [item.platform, projectKey(item), moduleKey(item), directory]);
     const directoryNode = ensureSection(
       'directory',
       directory,
@@ -533,15 +622,8 @@
     captionRow.appendChild(caption);
     captionRow.appendChild(openButton);
 
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    const qualifier = item.qualifier ? ` @${item.qualifier}` : '';
-    meta.textContent = `${platformLabel(item.platform)} | ${item.projectName} | ${item.moduleName} | ${String(item.formatFamily || '').toUpperCase()} | ${dimensionLabel(item)}${qualifier}`;
-    meta.title = item.relPath || item.absPath;
-
     tile.appendChild(thumbWrap);
     tile.appendChild(captionRow);
-    tile.appendChild(meta);
     return tile;
   }
 
@@ -973,6 +1055,18 @@
     resetRender();
   });
 
+  elements.zoomOut.addEventListener('click', () => {
+    setTileSize(state.tileSize - TILE_SIZE_STEP);
+  });
+
+  elements.zoomIn.addEventListener('click', () => {
+    setTileSize(state.tileSize + TILE_SIZE_STEP);
+  });
+
+  elements.zoomReset.addEventListener('click', () => {
+    setTileSize(DEFAULT_TILE_SIZE);
+  });
+
   elements.refresh.addEventListener('click', () => {
     setLoading(true, 'Indexing assets...');
     post('refresh');
@@ -1032,6 +1126,7 @@
     }
   };
 
+  applyTileSize();
   setLoading(true, 'Indexing assets...');
   post('ready');
 })();

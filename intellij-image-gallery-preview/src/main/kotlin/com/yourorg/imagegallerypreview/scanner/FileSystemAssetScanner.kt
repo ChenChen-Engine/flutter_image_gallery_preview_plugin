@@ -35,11 +35,15 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
         scanIosAssets(results)
 
         return results
-            .distinctBy { "${it.platform}|${it.projectName}|${it.moduleName}|${it.relPath}|${it.copyToken}" }
+            .distinctBy { "${it.platform}|${it.projectPath}|${it.modulePath}|${it.relPath}|${it.copyToken}" }
             .sortedWith(
                 compareBy<GalleryAssetItem> { it.platform }
+                    .thenBy { !it.isPrimaryProject }
                     .thenBy { it.projectName.lowercase(Locale.ROOT) }
+                    .thenBy { it.projectRelPath.lowercase(Locale.ROOT) }
+                    .thenBy { !it.isPrimaryModule }
                     .thenBy { it.moduleName.lowercase(Locale.ROOT) }
+                    .thenBy { it.moduleRelPath.lowercase(Locale.ROOT) }
                     .thenBy { it.groupPath.lowercase(Locale.ROOT) }
                     .thenBy { it.fileName.lowercase(Locale.ROOT) }
             )
@@ -81,8 +85,11 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
                         workspaceKind = workspaceKind,
                         projectName = projectIdentity.name,
                         projectPath = projectIdentity.path,
+                        projectRelPath = displayRelativePath(File(projectIdentity.path)),
                         isPrimaryProject = projectIdentity.isPrimary,
                         moduleName = moduleName,
+                        modulePath = AssetFileUtil.normalizePath(moduleRoot.absolutePath),
+                        moduleRelPath = displayRelativePath(moduleRoot),
                         isPrimaryModule = isPrimaryModule(moduleName),
                         groupPath = groupPath,
                         copyToken = AssetFileUtil.androidCopyToken(bucketName, file),
@@ -116,6 +123,14 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             val moduleName = resolveFlutterModuleName(moduleRoot, pubspec)
             val projectIdentity = resolveFlutterProject(moduleRoot, pubspec)
             val entries = PubspecAssetsParser.parseAssetEntries(pubspec)
+            val seenProjectFiles = linkedSetOf<String>()
+
+            fun addCandidate(file: File) {
+                val normalized = AssetFileUtil.normalizePath(file.absolutePath)
+                if (seenProjectFiles.add(normalized)) {
+                    addFlutterFile(file, moduleRoot, projectIdentity, moduleName, results)
+                }
+            }
 
             for (raw in entries) {
                 val entry = normalizeAssetEntry(raw)
@@ -123,19 +138,28 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
 
                 val target = File(moduleRoot, entry)
                 when {
-                    target.isFile -> addFlutterFile(target, moduleRoot, projectIdentity, moduleName, results)
+                    target.isFile -> addCandidate(target)
                     target.isDirectory -> {
                         for (file in walkFiltered(target)) {
                             if (!file.isFile) continue
-                            addFlutterFile(file, moduleRoot, projectIdentity, moduleName, results)
+                            addCandidate(file)
                         }
                     }
                     else -> {
                         val wildcardFiles = resolveWildcardTargets(moduleRoot, entry)
                         for (file in wildcardFiles) {
-                            addFlutterFile(file, moduleRoot, projectIdentity, moduleName, results)
+                            addCandidate(file)
                         }
                     }
+                }
+            }
+
+            for (fallbackName in listOf("assets", "res")) {
+                val fallbackDir = File(moduleRoot, fallbackName)
+                if (!fallbackDir.exists() || !fallbackDir.isDirectory) continue
+                for (file in walkFiltered(fallbackDir)) {
+                    if (!file.isFile) continue
+                    addCandidate(file)
                 }
             }
         }
@@ -162,8 +186,11 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             workspaceKind = workspaceKind,
             projectName = projectIdentity.name,
             projectPath = projectIdentity.path,
+            projectRelPath = displayRelativePath(File(projectIdentity.path)),
             isPrimaryProject = projectIdentity.isPrimary,
             moduleName = moduleName,
+            modulePath = AssetFileUtil.normalizePath(moduleRoot.absolutePath),
+            moduleRelPath = displayRelativePath(moduleRoot),
             isPrimaryModule = projectIdentity.isPrimary,
             groupPath = groupPath,
             copyToken = AssetFileUtil.flutterCopyToken(moduleRoot, file),
@@ -264,8 +291,11 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             workspaceKind = workspaceKind,
             projectName = projectIdentity.name,
             projectPath = projectIdentity.path,
+            projectRelPath = displayRelativePath(File(projectIdentity.path)),
             isPrimaryProject = projectIdentity.isPrimary,
             moduleName = moduleName,
+            modulePath = AssetFileUtil.normalizePath(moduleRoot.absolutePath),
+            moduleRelPath = displayRelativePath(moduleRoot),
             isPrimaryModule = projectIdentity.isPrimary && moduleName.equals("Runner", ignoreCase = true),
             groupPath = groupPath,
             copyToken = AssetFileUtil.iosCopyToken(moduleRoot, file),
@@ -534,6 +564,19 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             child.canonicalFile.toPath().startsWith(parent.canonicalFile.toPath())
         } catch (_: Throwable) {
             AssetFileUtil.normalizePath(child.absolutePath).startsWith(AssetFileUtil.normalizePath(parent.absolutePath))
+        }
+    }
+
+    private fun displayRelativePath(target: File): String {
+        return try {
+            val relative = AssetFileUtil.normalizePath(root.canonicalFile.toPath().relativize(target.canonicalFile.toPath()).toString())
+            when {
+                relative.isBlank() -> "."
+                relative.startsWith("..") -> relative
+                else -> "./$relative"
+            }
+        } catch (_: Throwable) {
+            AssetFileUtil.normalizePath(target.absolutePath)
         }
     }
 }

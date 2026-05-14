@@ -30,8 +30,11 @@ class GalleryWebPayloadBuilderTest {
         assertEquals("android", webItem.workspaceKind)
         assertEquals("demo", webItem.projectName)
         assertEquals("C:/demo", webItem.projectPath)
+        assertEquals(".", webItem.projectRelPath)
         assertEquals(true, webItem.isPrimaryProject)
         assertEquals("app", webItem.moduleName)
+        assertEquals("C:/demo/app", webItem.modulePath)
+        assertEquals("./app", webItem.moduleRelPath)
         assertEquals(true, webItem.isPrimaryModule)
         assertEquals("res/drawable", webItem.groupPath)
         assertEquals(false, webItem.isAnimated)
@@ -44,8 +47,11 @@ class GalleryWebPayloadBuilderTest {
             workspaceKind = "android",
             projectName = "demo",
             projectPath = "C:/demo",
+            projectRelPath = ".",
             isPrimaryProject = true,
             moduleName = "app",
+            modulePath = "C:/demo/app",
+            moduleRelPath = "./app",
             isPrimaryModule = true,
             groupPath = "res/drawable",
             copyToken = "R.drawable.icon",

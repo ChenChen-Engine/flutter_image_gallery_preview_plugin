@@ -98,6 +98,13 @@ function isDescendantOrSame(child: string, parent: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function displayRelativePath(root: string, target: string): string {
+  const relative = normalizePath(path.relative(root, target));
+  if (!relative) return '.';
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return relative;
+  return `./${relative}`;
+}
+
 function findNearestPubspecRoot(start: string, root: string): string | null {
   let cursor = fs.existsSync(start) && fs.statSync(start).isDirectory() ? start : path.dirname(start);
   while (cursor && isDescendantOrSame(cursor, root)) {
@@ -490,6 +497,7 @@ function toGalleryItem(params: {
   projectPath: string;
   isPrimaryProject: boolean;
   moduleName: string;
+  modulePath: string;
   isPrimaryModule: boolean;
   groupPath: string;
   copyToken: string;
@@ -506,8 +514,11 @@ function toGalleryItem(params: {
     workspaceKind: params.workspaceKind,
     projectName: params.projectName,
     projectPath: normalizePath(params.projectPath),
+    projectRelPath: displayRelativePath(params.root, params.projectPath),
     isPrimaryProject: params.isPrimaryProject,
     moduleName: params.moduleName,
+    modulePath: normalizePath(params.modulePath),
+    moduleRelPath: displayRelativePath(params.root, params.modulePath),
     isPrimaryModule: params.isPrimaryModule,
     groupPath: params.groupPath,
     copyToken: params.copyToken,
@@ -586,6 +597,7 @@ function scanAndroidRes(root: string, workspaceKind: GalleryAssetItem['workspace
       projectPath: project.path,
       isPrimaryProject: project.isPrimary,
       moduleName,
+      modulePath: moduleRoot,
       isPrimaryModule: moduleName.toLowerCase() === 'app',
       groupPath,
       copyToken: androidCopyToken(bucket, filePath),
@@ -636,6 +648,36 @@ function scanFlutterAssets(root: string, workspaceKind: GalleryAssetItem['worksp
     const moduleName = resolveFlutterModuleName(moduleRoot, pubspecPath);
     const project = resolveFlutterProject(root, moduleRoot, pubspecPath);
     const entries = parseFlutterAssetEntries(pubspecPath);
+    const seenProjectFiles = new Set<string>();
+
+    const addFlutterFile = (filePath: string): void => {
+      const normalized = normalizePath(filePath);
+      if (seenProjectFiles.has(normalized)) return;
+      seenProjectFiles.add(normalized);
+
+      const family = detectFormatFamily(filePath, false);
+      if (family === 'other') return;
+
+      const moduleRel = normalizePath(path.relative(moduleRoot, filePath));
+      const groupPath = moduleRel.includes('/') ? moduleRel.slice(0, moduleRel.lastIndexOf('/')) : '.';
+      results.push(toGalleryItem({
+        root,
+        filePath,
+        sourceType: 'flutter_asset',
+        platform: 'flutter',
+        workspaceKind,
+        projectName: project.name,
+        projectPath: project.path,
+        isPrimaryProject: project.isPrimary,
+        moduleName,
+        modulePath: moduleRoot,
+        isPrimaryModule: project.isPrimary,
+        groupPath,
+        copyToken: flutterCopyToken(moduleRoot, filePath),
+        qualifier: '',
+        formatFamily: family
+      }));
+    };
 
     for (const rawEntry of entries) {
       const entry = normalizeAssetEntry(rawEntry);
@@ -643,80 +685,28 @@ function scanFlutterAssets(root: string, workspaceKind: GalleryAssetItem['worksp
 
       const target = path.join(moduleRoot, entry);
       if (fs.existsSync(target) && fs.statSync(target).isFile()) {
-        const family = detectFormatFamily(target, false);
-        if (family !== 'other') {
-          const moduleRel = normalizePath(path.relative(moduleRoot, target));
-          const groupPath = moduleRel.includes('/') ? moduleRel.slice(0, moduleRel.lastIndexOf('/')) : '.';
-          results.push(toGalleryItem({
-            root,
-            filePath: target,
-            sourceType: 'flutter_asset',
-            platform: 'flutter',
-            workspaceKind,
-            projectName: project.name,
-            projectPath: project.path,
-            isPrimaryProject: project.isPrimary,
-            moduleName,
-            isPrimaryModule: project.isPrimary,
-            groupPath,
-            copyToken: flutterCopyToken(moduleRoot, target),
-            qualifier: '',
-            formatFamily: family
-          }));
-        }
+        addFlutterFile(target);
         continue;
       }
 
       if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
         walkFiles(target, (filePath) => {
-          const family = detectFormatFamily(filePath, false);
-          if (family === 'other') return;
-
-          const moduleRel = normalizePath(path.relative(moduleRoot, filePath));
-          const groupPath = moduleRel.includes('/') ? moduleRel.slice(0, moduleRel.lastIndexOf('/')) : '.';
-          results.push(toGalleryItem({
-            root,
-            filePath,
-            sourceType: 'flutter_asset',
-            platform: 'flutter',
-            workspaceKind,
-            projectName: project.name,
-            projectPath: project.path,
-            isPrimaryProject: project.isPrimary,
-            moduleName,
-            isPrimaryModule: project.isPrimary,
-            groupPath,
-            copyToken: flutterCopyToken(moduleRoot, filePath),
-            qualifier: '',
-            formatFamily: family
-          }));
+          addFlutterFile(filePath);
         });
         continue;
       }
 
       for (const wildcardFile of resolveWildcardTargets(moduleRoot, entry)) {
-        const family = detectFormatFamily(wildcardFile, false);
-        if (family === 'other') continue;
-
-        const moduleRel = normalizePath(path.relative(moduleRoot, wildcardFile));
-        const groupPath = moduleRel.includes('/') ? moduleRel.slice(0, moduleRel.lastIndexOf('/')) : '.';
-        results.push(toGalleryItem({
-          root,
-          filePath: wildcardFile,
-          sourceType: 'flutter_asset',
-          platform: 'flutter',
-          workspaceKind,
-          projectName: project.name,
-          projectPath: project.path,
-          isPrimaryProject: project.isPrimary,
-          moduleName,
-          isPrimaryModule: project.isPrimary,
-          groupPath,
-          copyToken: flutterCopyToken(moduleRoot, wildcardFile),
-          qualifier: '',
-          formatFamily: family
-        }));
+        addFlutterFile(wildcardFile);
       }
+    }
+
+    for (const fallbackName of ['assets', 'res']) {
+      const fallbackDir = path.join(moduleRoot, fallbackName);
+      if (!fs.existsSync(fallbackDir) || !fs.statSync(fallbackDir).isDirectory()) continue;
+      walkFiles(fallbackDir, (filePath) => {
+        addFlutterFile(filePath);
+      });
     }
   }
 
@@ -832,6 +822,7 @@ function scanIosAssets(root: string, workspaceKind: GalleryAssetItem['workspaceK
           projectPath: project.path,
           isPrimaryProject: project.isPrimary,
           moduleName,
+          modulePath: moduleRoot,
           isPrimaryModule: project.isPrimary && moduleName.toLowerCase() === 'runner',
           groupPath,
           copyToken: iosCopyToken(moduleRoot, assetPath),
@@ -867,6 +858,7 @@ function scanIosAssets(root: string, workspaceKind: GalleryAssetItem['workspaceK
         projectPath: project.path,
         isPrimaryProject: project.isPrimary,
         moduleName,
+        modulePath: moduleRoot,
         isPrimaryModule: project.isPrimary && moduleName.toLowerCase() === 'runner',
         groupPath,
         copyToken: iosCopyToken(moduleRoot, filePath),
@@ -892,15 +884,19 @@ export function scanAssets(root: string): GalleryAssetItem[] {
 
   const dedup = new Map<string, GalleryAssetItem>();
   for (const item of all) {
-    const key = `${item.platform}|${item.projectName}|${item.moduleName}|${item.relPath}|${item.copyToken}`;
+    const key = `${item.platform}|${item.projectPath}|${item.modulePath}|${item.relPath}|${item.copyToken}`;
     if (!dedup.has(key)) dedup.set(key, item);
   }
 
   return [...dedup.values()].sort((a, b) => {
     return (
       a.platform.localeCompare(b.platform) ||
+      Number(b.isPrimaryProject) - Number(a.isPrimaryProject) ||
       a.projectName.localeCompare(b.projectName) ||
+      a.projectRelPath.localeCompare(b.projectRelPath) ||
+      Number(b.isPrimaryModule) - Number(a.isPrimaryModule) ||
       a.moduleName.localeCompare(b.moduleName) ||
+      a.moduleRelPath.localeCompare(b.moduleRelPath) ||
       a.groupPath.localeCompare(b.groupPath) ||
       a.relPath.localeCompare(b.relPath)
     );

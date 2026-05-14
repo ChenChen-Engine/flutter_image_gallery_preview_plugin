@@ -87,6 +87,34 @@ suite('scanner', () => {
     ));
   });
 
+  test('scan flutter fallback assets and keep duplicate project names separate by path', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'igp-vscode-flutter-adapted-libs-'));
+    fs.writeFileSync(path.join(root, 'pubspec.yaml'), ['name: root_app', 'flutter:', '  assets:', '    - assets/images/'].join('\n'), 'utf8');
+
+    const firstPlugin = path.join(root, 'adapted_libs/app_shortcuts');
+    const secondPlugin = path.join(root, 'adapted_libs/group/app_shortcuts');
+    fs.mkdirSync(firstPlugin, { recursive: true });
+    fs.mkdirSync(secondPlugin, { recursive: true });
+    fs.writeFileSync(path.join(firstPlugin, 'pubspec.yaml'), 'name: app_shortcuts\n', 'utf8');
+    fs.writeFileSync(path.join(secondPlugin, 'pubspec.yaml'), 'name: app_shortcuts\n', 'utf8');
+    writePng(path.join(firstPlugin, 'assets/icon.png'), 10, 10);
+    writePng(path.join(secondPlugin, 'res/icon.png'), 12, 12);
+
+    const items = scanAssets(root).filter((item) =>
+      item.sourceType === 'flutter_asset' && item.projectName === 'app_shortcuts'
+    );
+
+    assert.strictEqual(items.length, 2);
+    assert.deepStrictEqual(
+      new Set(items.map((item) => item.projectRelPath)),
+      new Set(['./adapted_libs/app_shortcuts', './adapted_libs/group/app_shortcuts'])
+    );
+    assert.strictEqual(new Set(items.map((item) => item.projectPath)).size, items.length);
+    assert.ok(items.every((item) => item.modulePath === item.projectPath));
+    assert.ok(items.some((item) => item.copyToken === 'assets/icon.png'));
+    assert.ok(items.some((item) => item.copyToken === 'res/icon.png'));
+  });
+
   test('scan flutter workspace android and ios resources from root and nested projects', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'igp-vscode-flutter-platforms-'));
 

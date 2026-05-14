@@ -102,6 +102,39 @@ class FileSystemAssetScannerTest {
     }
 
     @Test
+    fun `scan flutter fallback assets and keep duplicate project names separate by path`() {
+        val root = createTempDirectory("igp-test-flutter-adapted-libs").toFile()
+        File(root, "pubspec.yaml").writeText("name: root_app\nflutter:\n  assets:\n    - assets/images/\n")
+
+        val firstPlugin = File(root, "adapted_libs/app_shortcuts")
+        val secondPlugin = File(root, "adapted_libs/group/app_shortcuts")
+        File(firstPlugin, "pubspec.yaml").apply {
+            parentFile.mkdirs()
+            writeText("name: app_shortcuts\n")
+        }
+        File(secondPlugin, "pubspec.yaml").apply {
+            parentFile.mkdirs()
+            writeText("name: app_shortcuts\n")
+        }
+
+        createPng(File(firstPlugin, "assets/icon.png"), 10, 10)
+        createPng(File(secondPlugin, "res/icon.png"), 12, 12)
+
+        val items = FileSystemAssetScanner(root).scan()
+            .filter { it.sourceType == SourceType.FLUTTER_ASSET && it.projectName == "app_shortcuts" }
+
+        assertEquals(2, items.size)
+        assertEquals(
+            setOf("./adapted_libs/app_shortcuts", "./adapted_libs/group/app_shortcuts"),
+            items.map { it.projectRelPath }.toSet()
+        )
+        assertEquals(items.map { it.projectPath }.toSet().size, items.size)
+        assertTrue(items.all { it.modulePath == it.projectPath })
+        assertTrue(items.any { it.copyToken == "assets/icon.png" })
+        assertTrue(items.any { it.copyToken == "res/icon.png" })
+    }
+
+    @Test
     fun `scan flutter workspace android and ios resources from root and nested projects`() {
         val root = createTempDirectory("igp-test-flutter-platforms").toFile()
 
