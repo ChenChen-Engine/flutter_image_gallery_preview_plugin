@@ -9,20 +9,8 @@
 <body>
   <main class="page">
     <header class="toolbar">
-      <div class="toolbar-main">
+      <div class="toolbar-search-row">
         <input id="searchInput" class="search-input" type="search" placeholder="Search by file name or MD5" autocomplete="off">
-        <div class="toolbar-right">
-          <div class="zoom-cluster" aria-label="Preview size">
-            <span class="zoom-label">Preview Size</span>
-            <div class="zoom-controls">
-              <button id="zoomOutButton" class="icon-button" type="button" title="缩小预览">−</button>
-              <button id="zoomResetButton" class="icon-button" type="button" title="还原默认尺寸">⟲</button>
-              <button id="zoomInButton" class="icon-button" type="button" title="放大预览">＋</button>
-            </div>
-          </div>
-          <div id="statusText" class="status-text">Visible 0 / Indexed 0</div>
-          <button id="refreshButton" class="primary-button" type="button">Refresh</button>
-        </div>
       </div>
       <div class="toolbar-filters">
         <select id="platformFilter" class="filter-select" aria-label="Platform">
@@ -43,6 +31,18 @@
         <select id="formatFilter" class="filter-select" aria-label="Format">
           <option value="all">All Formats</option>
         </select>
+      </div>
+      <div class="toolbar-utility-row">
+        <div id="statusText" class="status-text">Visible 0 / Indexed 0</div>
+        <div class="zoom-cluster" aria-label="Preview size">
+          <span class="zoom-label">Preview Size</span>
+          <div class="zoom-controls">
+            <button id="zoomOutButton" class="icon-button" type="button" title="缩小预览">−</button>
+            <button id="zoomResetButton" class="icon-button" type="button" title="还原默认尺寸">⟲</button>
+            <button id="zoomInButton" class="icon-button" type="button" title="放大预览">＋</button>
+          </div>
+        </div>
+        <button id="refreshButton" class="primary-button" type="button">Refresh</button>
       </div>
     </header>
 

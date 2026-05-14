@@ -59,19 +59,17 @@ input {
   backdrop-filter: blur(16px);
 }
 
-.toolbar-main {
+.toolbar-search-row {
   width: 100%;
   min-width: 0;
   display: flex;
-  flex-wrap: nowrap;
-  gap: 8px;
   align-items: center;
-  justify-content: space-between;
 }
 
-.toolbar-right {
-  flex: 0 0 auto;
+.toolbar-utility-row {
+  width: 100%;
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
@@ -106,7 +104,8 @@ input {
 
 .search-input {
   min-width: 220px;
-  flex: 1 1 280px;
+  width: 100%;
+  flex: 1 1 auto;
   padding: 0 12px;
 }
 
@@ -1016,11 +1015,7 @@ input {
     border-radius: 18px 18px 0 0;
   }
 
-  .toolbar-main {
-    flex-wrap: wrap;
-  }
-
-  .toolbar-right {
+  .toolbar-utility-row {
     width: 100%;
     flex-wrap: wrap;
     justify-content: flex-start;

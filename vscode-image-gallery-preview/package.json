@@ -2,7 +2,7 @@
   "name": "vscode-image-gallery-preview",
   "displayName": "Image Gallery Preview",
   "description": "Preview Android resources and Flutter assets in a VSCode side panel.",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "publisher": "yourorg",
   "engines": {
     "vscode": "^1.95.0"

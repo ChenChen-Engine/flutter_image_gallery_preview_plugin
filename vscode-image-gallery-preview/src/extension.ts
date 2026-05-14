@@ -3,9 +3,9 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { Worker } from 'worker_threads';
 import exifReader from 'exif-reader';
 import sharp from 'sharp';
-import { scanAssets } from './scanner';
 import {
   GalleryAssetItem,
   ImageInfo,
@@ -20,6 +20,51 @@ import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
 const execFileAsync = promisify(execFile);
 const MEDIAINFO_DOWNLOAD_URL = 'https://mediaarea.net/en/MediaInfo/Download';
+const SCAN_TIMEOUT_MS = 120_000;
+
+function scanWorkspaceInWorker(roots: string[]): Promise<GalleryAssetItem[]> {
+  if (!roots.length) return Promise.resolve([]);
+
+  const workerPath = path.join(__dirname, 'scanWorker.js');
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const worker = new Worker(workerPath, {
+      workerData: { roots }
+    });
+    const finish = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      complete();
+    };
+    timeout = setTimeout(() => {
+      finish(() => reject(new Error(`Indexing timed out after ${SCAN_TIMEOUT_MS / 1000}s`)));
+      void worker.terminate();
+    }, SCAN_TIMEOUT_MS);
+
+    worker.on('message', (message: { items?: GalleryAssetItem[]; error?: string }) => {
+      finish(() => {
+        if (message?.error) {
+          reject(new Error(message.error));
+        } else {
+          resolve(Array.isArray(message?.items) ? message.items : []);
+        }
+      });
+      void worker.terminate();
+    });
+
+    worker.on('error', (error) => {
+      finish(() => reject(error));
+    });
+
+    worker.on('exit', (code) => {
+      if (code !== 0) {
+        finish(() => reject(new Error(`Index worker exited with code ${code}`)));
+      }
+    });
+  });
+}
 
 class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'imageGalleryPreview.view';
@@ -88,10 +133,15 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
   private async handleWebMessage(message: any): Promise<void> {
     if (message?.type === 'ready') {
-      await this.postLoadingState(false, 'Ready');
       await this.postAssets();
+      if (this.refreshTask) {
+        await this.postLoadingState(true, 'Indexing assets...');
+        return;
+      }
       if (!this.cachedItems.length) {
         await this.refresh();
+      } else {
+        await this.postLoadingState(false, '');
       }
       return;
     }
@@ -149,6 +199,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async performRefresh(): Promise<void> {
+    const started = Date.now();
     await this.postLoadingState(true, 'Indexing assets...');
 
     try {
@@ -156,24 +207,25 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
         this.cachedItems = [];
         this.duplicateIndex.clear();
         await this.postAssets();
-        await this.postLoadingState(false, 'Ready');
+        await this.postLoadingState(false, '');
         this.afterRefreshQueue = [];
         return;
       }
 
-      const items = vscode.workspace.workspaceFolders.flatMap((folder) =>
-        scanAssets(folder.uri.fsPath).map((item) => ({
+      const roots = vscode.workspace.workspaceFolders.map((folder) => folder.uri.fsPath);
+      const scannedItems = await scanWorkspaceInWorker(roots);
+      const items = scannedItems.map((item) => ({
           ...item,
           absPath: normalizePath(item.absPath),
           relPath: normalizePath(item.relPath),
           resourceRootPath: normalizePath(item.resourceRootPath)
-        }))
-      );
+        }));
 
       this.cachedItems = items;
       this.duplicateIndex = this.buildDuplicateIndex(items);
 
       await this.postAssets();
+      console.info(`[Image Gallery Preview] Indexed ${items.length} assets in ${Date.now() - started}ms`);
       await this.postLoadingState(false, `Updated ${new Date().toLocaleTimeString()}`);
 
       const callbacks = this.afterRefreshQueue.splice(0, this.afterRefreshQueue.length);
@@ -182,6 +234,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       }
     } catch (error) {
       this.afterRefreshQueue = [];
+      console.error('[Image Gallery Preview] Failed to index assets', error);
       await this.postLoadingState(false, `Failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }

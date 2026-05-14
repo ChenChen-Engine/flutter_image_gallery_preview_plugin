@@ -98,7 +98,9 @@
     currentAudioController: null,
     unsupportedItem: null,
     videoDialogItem: null,
-    videoProgressDragging: false
+    videoProgressDragging: false,
+    videoOpenToken: 0,
+    videoErrorSuppressed: false
   };
 
   function loadCollapsedKeys() {
@@ -789,37 +791,39 @@
   function appendVideoPreview(container, item) {
     const wrapper = document.createElement('div');
     wrapper.className = 'media-placeholder video-placeholder';
+    const icon = document.createElement('div');
+    icon.className = 'media-icon';
+    icon.textContent = '▣';
+    wrapper.appendChild(icon);
     if (item.previewSrc) {
       const video = document.createElement('video');
       video.className = 'thumb-img';
-      video.preload = 'metadata';
+      video.preload = 'auto';
       video.muted = true;
       video.playsInline = true;
+      video.style.visibility = 'hidden';
       video.src = item.previewSrc;
-      video.addEventListener('loadedmetadata', () => {
+      video.addEventListener('loadeddata', () => {
         wrapper.classList.add('has-video-preview');
-        updateDuration(item, duration, video.duration);
+        icon.remove();
+        video.style.visibility = 'visible';
         try {
           video.currentTime = Math.min(0.1, Math.max(0, video.duration || 0));
         } catch {
           // keep first decoded frame if seeking is unsupported
         }
-      });
+      }, { once: true });
+      video.addEventListener('loadedmetadata', () => {
+        updateDuration(item, duration, video.duration);
+      }, { once: true });
       video.addEventListener('error', () => {
         wrapper.classList.remove('has-video-preview');
-        if (!wrapper.querySelector('.media-icon')) {
-          const icon = document.createElement('div');
-          icon.className = 'media-icon';
-          icon.textContent = '▣';
-          wrapper.prepend(icon);
-        }
+        video.style.visibility = 'hidden';
+        if (!wrapper.contains(icon)) wrapper.prepend(icon);
       }, { once: true });
       wrapper.appendChild(video);
     } else {
-      const icon = document.createElement('div');
-      icon.className = 'media-icon';
-      icon.textContent = '▣';
-      wrapper.appendChild(icon);
+      wrapper.classList.remove('has-video-preview');
     }
 
     const play = document.createElement('span');
@@ -947,32 +951,87 @@
       return;
     }
     stopCurrentAudio();
+    const token = ++state.videoOpenToken;
+    resetVideoElement();
     state.videoDialogItem = item;
     elements.videoTitle.textContent = fileNameOf(item);
-    elements.videoPlayer.src = item.previewSrc;
     elements.videoPlayer.loop = false;
     elements.videoPlayer.playbackRate = Number(elements.videoRateSelect.value || 1);
-    elements.videoModal.classList.remove('hidden');
+    elements.videoCenterButton.textContent = '…';
+    let settled = false;
+    const readyTimeout = window.setTimeout(() => {
+      cleanup();
+      failVideoPlayback(item, token);
+    }, 10000);
+    const cleanup = () => {
+      window.clearTimeout(readyTimeout);
+      elements.videoPlayer.removeEventListener('loadeddata', onReady);
+      elements.videoPlayer.removeEventListener('canplay', onReady);
+      elements.videoPlayer.removeEventListener('error', onError);
+    };
+    const onReady = () => {
+      if (settled || token !== state.videoOpenToken) return;
+      settled = true;
+      cleanup();
+      elements.videoModal.classList.remove('hidden');
+      updateVideoProgress();
+      elements.videoPlayer.play().catch((error) => {
+        if (error?.name === 'NotAllowedError') {
+          updateVideoProgress();
+          return;
+        }
+        failVideoPlayback(item, token);
+      });
+    };
+    const onError = () => {
+      cleanup();
+      failVideoPlayback(item, token);
+    };
+    elements.videoPlayer.addEventListener('loadeddata', onReady);
+    elements.videoPlayer.addEventListener('canplay', onReady);
+    elements.videoPlayer.addEventListener('error', onError, { once: true });
+    elements.videoPlayer.src = item.previewSrc;
     elements.videoPlayer.load();
-    updateVideoProgress();
-    elements.videoPlayer.play().catch(() => {
-      showUnsupportedMedia(item, 'video');
-    });
   }
 
   function closeVideoDialog() {
-    elements.videoPlayer.pause();
-    elements.videoPlayer.removeAttribute('src');
-    elements.videoPlayer.load();
+    state.videoOpenToken += 1;
+    resetVideoElement();
     elements.videoModal.classList.add('hidden');
     state.videoDialogItem = null;
     updateVideoProgress();
   }
 
+  function resetVideoElement() {
+    state.videoErrorSuppressed = true;
+    elements.videoPlayer.pause();
+    elements.videoPlayer.removeAttribute('src');
+    elements.videoPlayer.load();
+    state.videoErrorSuppressed = false;
+  }
+
+  function failVideoPlayback(item, token) {
+    if (token && token !== state.videoOpenToken) return;
+    state.videoOpenToken += 1;
+    resetVideoElement();
+    elements.videoModal.classList.add('hidden');
+    state.videoDialogItem = null;
+    updateVideoProgress();
+    showUnsupportedMedia(item, 'video');
+  }
+
   function toggleVideoPlayback() {
     if (!state.videoDialogItem) return;
     if (elements.videoPlayer.paused) {
-      elements.videoPlayer.play().catch(() => showUnsupportedMedia(state.videoDialogItem, 'video'));
+      const item = state.videoDialogItem;
+      const token = state.videoOpenToken;
+      elements.videoPlayer.play().catch((error) => {
+        if (error?.name === 'NotAllowedError') {
+          updateVideoProgress();
+          return;
+        }
+        failVideoPlayback(item, token);
+      });
     } else {
       elements.videoPlayer.pause();
     }
@@ -1542,7 +1601,9 @@
   elements.videoPlayer.addEventListener('timeupdate', updateVideoProgress);
   elements.videoPlayer.addEventListener('loadedmetadata', updateVideoProgress);
   elements.videoPlayer.addEventListener('error', () => {
-    if (state.videoDialogItem) showUnsupportedMedia(state.videoDialogItem, 'video');
+    if (state.videoDialogItem && !state.videoErrorSuppressed) {
+      failVideoPlayback(state.videoDialogItem, state.videoOpenToken);
+    }
   });
   elements.videoRateSelect.addEventListener('change', () => {
     elements.videoPlayer.playbackRate = Number(elements.videoRateSelect.value || 1);
