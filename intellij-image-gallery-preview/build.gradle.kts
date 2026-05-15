@@ -19,26 +19,8 @@ fun readVersionFromFile(): String {
     return versionFile.readText().trim().ifBlank { "0.0.1" }
 }
 
-fun nextPatchVersion(raw: String): String {
-    val parts = raw.split(".").mapNotNull { it.toIntOrNull() }
-    val major = parts.getOrElse(0) { 0 }
-    val minor = parts.getOrElse(1) { 0 }
-    val patch = parts.getOrElse(2) { 0 } + 1
-    return "$major.$minor.$patch"
-}
-
-val packagingRequested = gradle.startParameter.taskNames.any {
-    it.contains("buildPlugin", ignoreCase = true) || it.contains("copyPluginZipToOutput", ignoreCase = true)
-}
-
 val configuredVersion = readVersionFromFile()
-val resolvedVersion = if (packagingRequested) nextPatchVersion(configuredVersion) else configuredVersion
-
-if (packagingRequested && resolvedVersion != configuredVersion) {
-    versionFile.writeText("$resolvedVersion\n")
-}
-
-version = resolvedVersion
+version = configuredVersion
 
 repositories {
     maven(url = "https://mirrors.cloud.tencent.com/nexus/repository/maven-public/")
