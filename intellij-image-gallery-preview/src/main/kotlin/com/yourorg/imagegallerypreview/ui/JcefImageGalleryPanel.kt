@@ -27,6 +27,7 @@ import com.yourorg.imagegallerypreview.model.GalleryAssetItem
 import com.yourorg.imagegallerypreview.service.GalleryIndexService
 import com.yourorg.imagegallerypreview.util.AssetFileUtil
 import java.awt.BorderLayout
+import java.awt.CardLayout
 import java.awt.Desktop
 import java.awt.Font
 import java.awt.datatransfer.StringSelection
@@ -42,6 +43,9 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     private val logger = Logger.getInstance(JcefImageGalleryPanel::class.java)
     private val gson = Gson()
     private val service = GalleryIndexService.getInstance(project)
+    private val contentLayout = CardLayout()
+    private val contentPanel = JPanel(contentLayout)
+    private val hostLoadingLabel = JBLabel("Loading Image Gallery...", SwingConstants.CENTER)
     private val browser: JBCefBrowser?
     private val messageQuery: JBCefJSQuery?
     private val latestItems = mutableListOf<GalleryAssetItem>()
@@ -76,8 +80,16 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
                 null
             }
 
-            add(browser.component, BorderLayout.CENTER)
-            browser.loadURL(prepareWebUi(messageQuery).toUri().toString())
+            contentPanel.add(createHostLoadingPanel(), "loading")
+            contentPanel.add(browser.component, "browser")
+            add(contentPanel, BorderLayout.CENTER)
+            contentLayout.show(contentPanel, "loading")
+            try {
+                browser.loadURL(prepareWebUi(messageQuery).toUri().toString())
+            } catch (error: Throwable) {
+                logger.warn("Failed to load gallery web UI", error)
+                hostLoadingLabel.text = "Failed to load Image Gallery UI: ${error.message ?: error.javaClass.simpleName}"
+            }
         }
 
         service.addListener(itemsListener)
@@ -108,11 +120,13 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         when (message.string("type")) {
             "ready" -> {
                 browserReady = true
+                contentLayout.show(contentPanel, "browser")
                 sendLoadingStateIfReady(service.currentStatus())
                 sendAssetsIfReady()
             }
 
-            "refresh" -> service.refreshAsync()
+            "sync" -> service.syncAsync()
+            "refresh" -> service.refreshAsync(forceReindex = message.get("force")?.asBoolean ?: true)
             "copy" -> ApplicationManager.getApplication().invokeLater {
                 copyText(message.string("value").orEmpty(), message.string("label").orEmpty())
             }
@@ -156,6 +170,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     }
 
     private fun sendLoadingStateIfReady(status: GalleryIndexService.IndexStatus) {
+        updateHostLoading(status)
         if (!browserReady) return
         sendToWeb(
             mapOf(
@@ -166,9 +181,21 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
                 "indexedCount" to status.indexedCount,
                 "metadataCount" to status.metadataCount,
                 "currentPath" to status.currentPath,
-                "fallbackSource" to status.fallbackSource
+                "fallbackSource" to status.fallbackSource,
+                "elapsedMillis" to status.elapsedMillis,
+                "workerStatus" to status.workerStatus,
+                "diagnostic" to status.diagnostic
             )
         )
+    }
+
+    private fun updateHostLoading(status: GalleryIndexService.IndexStatus) {
+        if (browserReady) return
+        hostLoadingLabel.text = when (status.state) {
+            GalleryIndexService.IndexState.FAILED -> "Image Gallery failed to load: ${status.message}"
+            GalleryIndexService.IndexState.INDEXING -> status.message
+            else -> "Loading Image Gallery..."
+        }
     }
 
     private fun sendMediaInfo(absPath: String) {
@@ -281,6 +308,16 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         } catch (_: Throwable) {
             null
         }
+    }
+
+    private fun createHostLoadingPanel(): JPanel {
+        val panel = JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(28)
+            background = JBColor.PanelBackground
+        }
+        hostLoadingLabel.font = hostLoadingLabel.font.deriveFont(Font.BOLD, 15f)
+        panel.add(hostLoadingLabel, BorderLayout.CENTER)
+        return panel
     }
 
     private fun createUnsupportedPanel(): JPanel {

@@ -153,6 +153,10 @@ The shared web layer does not guess platform copy rules. Host code sends the fin
   2. built-in / native metadata
   3. `ffprobe` to fill stream and duration gaps
   4. built-in fallback metadata
+- Metadata is enriched with bounded parallelism (`max 6`) after discovery and before publish.
+- MediaInfo JSON keeps all primitive track fields; row truncation is intentionally avoided so the `i` dialog can show complete CLI output.
+- MediaInfo text reports are also parsed because `mediaInfo --output=json <file>` can return the default readable report on MediaInfo CLI v26.05.
+- Windows direct executable fallback checks PATH and common CLI install directories across all drive letters, including `MediaInfo_Cli`.
 - Indexed items are enriched before the gallery payload is published, so `durationMillis`, `durationLabel`, and `mediaInfo` are ready when `i` is clicked.
 - MediaInfo GUI is intentionally rejected.
 - MediaInfo detection now requires CLI-style execution, not just an `.exe` with a matching name.
@@ -189,8 +193,18 @@ Relevant files:
 
 - Both hosts render audio/video as non-playing placeholders in the shared web UI.
 - The center play button calls `openWithDefaultApp`, so playback always happens in the OS default associated app.
+- The play button keeps the original centered circular overlay visual; only the behavior changed.
+- Duration is rendered as a bottom-centered overlay inside the thumbnail border with a 2px bottom offset.
 - Single-click copy and double-click reveal stay unchanged.
 - Indexed metadata is shown immediately from the cached payload; `requestMediaInfo` remains only as a defensive fallback path.
+
+## Sync, Refresh, and diagnostics
+
+- `Sync` is the normal incremental path for startup, file watcher changes, and toolbar sync. It detects added / deleted / changed resources and reuses valid indexed metadata for unchanged files.
+- `Refresh` is a forced reindex path. It clears or bypasses metadata cache and reruns MediaInfo / native / ffprobe enrichment.
+- IntelliJ shows a Swing-side loading fallback before the JCEF web UI reports `ready`, preventing a blank Image Gallery window after IDE restart.
+- Loading payloads can include `phase`, item counts, metadata counts, current path, fallback source, elapsed time, worker status, partial count, and diagnostic text.
+- VSCode mirrors worker diagnostics into the `Image Gallery Preview` OutputChannel; if loading gets stuck, collect both overlay text and OutputChannel lines beginning with `[sync]`, `[refresh]`, or `[worker:...]`.
 
 ### Tradeoff
 
@@ -226,6 +240,12 @@ The implementation evolved in these stages:
    - VSCode incremental worker scanning for long-running projects
    - eager indexed metadata and structured loading diagnostics
    - external OS playback for audio and video
+7. Restore / diagnostics pass:
+   - Sync versus forced Refresh toolbar semantics
+   - bounded parallel MediaInfo-first metadata enrichment
+   - full MediaInfo row retention
+   - IntelliJ host-side loading fallback
+   - expanded VSCode loading and OutputChannel diagnostics
 
 ## Data model contract
 

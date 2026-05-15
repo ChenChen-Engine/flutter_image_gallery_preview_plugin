@@ -45,6 +45,59 @@ suite('scan worker', () => {
     assert.ok(done.items.every((item: GalleryAssetItem) => item.mediaInfo), 'expected eager metadata enrichment in done payload');
     assert.ok(items.every((item) => item.mediaInfo), 'expected returned items to include eager media info');
   });
+
+  test('enriches discovered items concurrently with bounded parallelism', async () => {
+    const workerModule = require('../scanWorker') as Record<string, unknown>;
+    const runScanWorker = workerModule.runScanWorker as ((args: {
+      roots: string[];
+      postMessage: (message: any) => void;
+      scanAssets: (root: string) => GalleryAssetItem[];
+      enrichItem: (item: GalleryAssetItem) => Promise<GalleryAssetItem>;
+      heartbeatMs: number;
+      metadataParallelism: number;
+    }) => Promise<GalleryAssetItem[]>) | undefined;
+
+    assert.ok(runScanWorker, 'expected scanWorker to export runScanWorker');
+
+    let active = 0;
+    let maxActive = 0;
+    const items = await runScanWorker!({
+      roots: ['C:/demo/one'],
+      postMessage: () => undefined,
+      scanAssets: () => [
+        asset('one.mp3', 'audio'),
+        asset('two.mp3', 'audio'),
+        asset('three.mp3', 'audio'),
+        asset('four.mp3', 'audio')
+      ],
+      enrichItem: async (item) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await delay(25);
+        active -= 1;
+        return {
+          ...item,
+          mediaInfo: {
+            mediaType: item.mediaType,
+            source: 'MediaInfo (PATH)',
+            sections: [{ title: 'Audio', rows: [{ label: 'Format', value: item.format.toUpperCase() }] }]
+          }
+        };
+      },
+      heartbeatMs: 0,
+      metadataParallelism: 3
+    });
+
+    assert.strictEqual(items.length, 4);
+    assert.ok(maxActive > 1, `expected concurrent enrichment, saw max active ${maxActive}`);
+    assert.ok(maxActive <= 3, `expected bounded enrichment, saw max active ${maxActive}`);
+    assert.deepStrictEqual(items.map((item) => item.absPath.split('/').pop()), [
+      'one.mp3',
+      'two.mp3',
+      'three.mp3',
+      'four.mp3'
+    ]);
+  });
 });
 
 function asset(fileName: string, mediaType: GalleryAssetItem['mediaType']): GalleryAssetItem {

@@ -46,8 +46,8 @@ export async function resolveIndexedMediaInfo(
     return imageInfoToMediaInfo(await deps.loadImageInfo(item));
   }
 
-  const builtIn = await deps.loadBuiltIn(item);
   const mediaInfo = await deps.loadMediaInfoCli(item);
+  const builtIn = await deps.loadBuiltIn(item);
   const ffprobe = await deps.loadFfprobe(item);
 
   if (mediaInfo) {
@@ -208,7 +208,7 @@ async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<Medi
   if (executable) {
     commands.push({
       file: executable,
-      args: ['--Output=JSON', absPath],
+      args: ['--output=json', absPath],
       source: `MediaInfo (${executable})`
     });
   }
@@ -216,7 +216,7 @@ async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<Medi
   if (process.platform !== 'win32' && !commands.length) {
     commands.push({
       file: 'mediainfo',
-      args: ['--Output=JSON', absPath],
+      args: ['--output=json', absPath],
       source: 'MediaInfo (PATH)'
     });
   }
@@ -224,13 +224,8 @@ async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<Medi
   for (const command of commands) {
     try {
       const { stdout } = await execFileAsync(command.file, command.args, { windowsHide: true, timeout: 8000 });
-      const parsed = JSON.parse(stdout);
-      const tracks = Array.isArray(parsed?.media?.track) ? parsed.media.track : [];
-      const sections = tracks
-        .map((track: Record<string, unknown>) => mediaInfoTrackToSection(track))
-        .filter((section: MetadataSection) => section.rows.length > 0);
-      if (!sections.length) continue;
-      return { mediaType, source: command.source, sections };
+      const info = parseMediaInfoOutput(stdout, mediaType, command.source);
+      if (info) return info;
     } catch {
       // try the next command candidate
     }
@@ -239,11 +234,65 @@ async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<Medi
   return null;
 }
 
-function mediaInfoTrackToSection(track: Record<string, unknown>): MetadataSection {
+export function parseMediaInfoOutput(output: string, mediaType: MediaType, source = 'MediaInfo'): MediaMetadataInfo | null {
+  return parseMediaInfoJson(output, mediaType, source) ?? parseMediaInfoText(output, mediaType, source);
+}
+
+function parseMediaInfoJson(output: string, mediaType: MediaType, source: string): MediaMetadataInfo | null {
+  try {
+    const parsed = JSON.parse(output);
+    const tracks = Array.isArray(parsed?.media?.track) ? parsed.media.track : [];
+    const sections = tracks
+      .map((track: Record<string, unknown>) => mediaInfoTrackToSection(track))
+      .filter((section: MetadataSection) => section.rows.length > 0);
+    return sections.length ? { mediaType, source, sections } : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseMediaInfoText(output: string, mediaType: MediaType, source: string): MediaMetadataInfo | null {
+  const sections: MetadataSection[] = [];
+  let title: string | null = null;
+  let rows: MetadataRow[] = [];
+
+  const flush = () => {
+    if (title && rows.length) {
+      sections.push({ title, rows });
+    }
+    rows = [];
+  };
+
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      flush();
+      title = null;
+      continue;
+    }
+
+    const separator = line.indexOf(':');
+    if (separator <= 0) {
+      flush();
+      title = line;
+      continue;
+    }
+
+    const label = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1).trim() || 'Unknown';
+    if (!label) continue;
+    if (!title) title = 'General';
+    rows.push({ label, value });
+  }
+  flush();
+
+  return sections.length ? { mediaType, source, sections } : null;
+}
+
+export function mediaInfoTrackToSection(track: Record<string, unknown>): MetadataSection {
   const title = String(track['@type'] ?? track.Type ?? 'General');
   const rows = Object.entries(track)
     .filter(([key, value]) => !key.startsWith('@') && value != null && typeof value !== 'object')
-    .slice(0, 80)
     .map(([key, value]) => metadataRow(humanizeKey(key), value));
   return { title, rows };
 }

@@ -96,6 +96,7 @@ class ImageGalleryPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val pageSizeFilter = JComboBox(DefaultComboBoxModel(arrayOf("60", "120", "240")))
     private val prevPageButton = JButton("Prev")
     private val nextPageButton = JButton("Next")
+    private val syncButton = JButton("Sync")
     private val refreshButton = JButton("Refresh")
 
     private val statusLabel = JBLabel("Visible 0 / Indexed 0")
@@ -163,6 +164,7 @@ class ImageGalleryPanel(private val project: Project) : JPanel(BorderLayout()) {
         searchField.minimumSize = Dimension(220, 28)
         pageSizeFilter.selectedItem = DEFAULT_PAGE_SIZE.toString()
 
+        syncButton.addActionListener { syncNow() }
         refreshButton.addActionListener { refreshNow() }
         prevPageButton.addActionListener {
             if (currentPageIndex > 0) {
@@ -183,6 +185,7 @@ class ImageGalleryPanel(private val project: Project) : JPanel(BorderLayout()) {
         controlsPanel.add(pageSizeFilter)
         controlsPanel.add(prevPageButton)
         controlsPanel.add(nextPageButton)
+        controlsPanel.add(syncButton)
         controlsPanel.add(refreshButton)
 
         val rightPanel = JPanel().apply {
@@ -231,6 +234,10 @@ class ImageGalleryPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     fun refreshNow() {
         service.refreshAsync()
+    }
+
+    fun syncNow() {
+        service.syncAsync()
     }
 
     fun disposePanel() {
@@ -553,6 +560,7 @@ class ImageGalleryPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun setLoading(loading: Boolean) {
+        syncButton.isEnabled = !loading
         refreshButton.isEnabled = !loading
         if (loading) {
             loadingOverlay.showLoading("Indexing assets...")

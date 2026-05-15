@@ -32,9 +32,19 @@ object MediaMetadataExtractor {
 
     fun infoFor(item: GalleryAssetItem): MediaMetadataInfo = extractFor(item).info
 
-    fun extractFor(item: GalleryAssetItem): MediaMetadataResult {
+    fun clearCache() {
+        cache.clear()
+    }
+
+    fun extractFor(item: GalleryAssetItem, force: Boolean = false): MediaMetadataResult {
         val file = File(item.absPath)
         val key = "${item.absPath}|${item.mtime}|${file.length()}|${item.mediaType}"
+        if (force) {
+            cache.remove(key)
+            val result = extract(item, file)
+            cache[key] = result
+            return result
+        }
         return cache.computeIfAbsent(key) {
             extract(item, file)
         }
@@ -144,24 +154,70 @@ object MediaMetadataExtractor {
         val commands = mediaInfoProbeCommands(file.absolutePath)
         for (command in commands) {
             val output = runCommand(command) ?: continue
-            val root = runCatching { JsonParser.parseString(output).asJsonObject }.getOrNull() ?: continue
-            val tracks = root.getAsJsonObject("media")?.getAsJsonArray("track") ?: continue
-            val sections = tracks.mapNotNull { element ->
-                val track = element as? JsonObject ?: return@mapNotNull null
-                val title = track.get("@type")?.asString ?: "General"
-                val rows = track.entrySet()
-                    .asSequence()
-                    .filter { !it.key.startsWith("@") && it.value.isJsonPrimitive }
-                    .take(80)
-                    .map { MetadataRow(humanizeKey(it.key), it.value.asString.ifBlank { UNKNOWN }) }
-                    .toList()
-                if (rows.isEmpty()) null else MetadataSection(title, rows)
-            }
-            if (sections.isNotEmpty()) {
-                return MediaMetadataInfo(mediaType, "MediaInfo", sections)
-            }
+            return parseMediaInfoOutput(output, mediaType) ?: continue
         }
         return null
+    }
+
+    internal fun parseMediaInfoOutput(output: String, mediaType: String): MediaMetadataInfo? {
+        return parseMediaInfoJson(output, mediaType) ?: parseMediaInfoText(output, mediaType)
+    }
+
+    internal fun parseMediaInfoJson(output: String, mediaType: String): MediaMetadataInfo? {
+        val root = runCatching { JsonParser.parseString(output).asJsonObject }.getOrNull() ?: return null
+        val tracks = root.getAsJsonObject("media")?.getAsJsonArray("track") ?: return null
+        val sections = tracks.mapNotNull { element ->
+            val track = element as? JsonObject ?: return@mapNotNull null
+            val title = track.get("@type")?.asString ?: "General"
+            val rows = track.entrySet()
+                .asSequence()
+                .filter { !it.key.startsWith("@") && it.value.isJsonPrimitive }
+                .map { MetadataRow(humanizeKey(it.key), it.value.asString.ifBlank { UNKNOWN }) }
+                .toList()
+            if (rows.isEmpty()) null else MetadataSection(title, rows)
+        }
+        return if (sections.isEmpty()) null else MediaMetadataInfo(mediaType, "MediaInfo", sections)
+    }
+
+    private fun parseMediaInfoText(output: String, mediaType: String): MediaMetadataInfo? {
+        val sections = mutableListOf<MetadataSection>()
+        var currentTitle: String? = null
+        val rows = mutableListOf<MetadataRow>()
+
+        fun flush() {
+            val title = currentTitle?.takeIf { it.isNotBlank() } ?: return
+            if (rows.isNotEmpty()) {
+                sections += MetadataSection(title, rows.toList())
+                rows.clear()
+            }
+        }
+
+        output.lineSequence()
+            .map { it.trim() }
+            .forEach { line ->
+                if (line.isBlank()) {
+                    flush()
+                    currentTitle = null
+                    return@forEach
+                }
+
+                val separator = line.indexOf(':')
+                if (separator <= 0) {
+                    flush()
+                    currentTitle = line
+                    return@forEach
+                }
+
+                val label = line.substring(0, separator).trim()
+                val value = line.substring(separator + 1).trim().ifBlank { UNKNOWN }
+                if (label.isNotBlank()) {
+                    if (currentTitle == null) currentTitle = "General"
+                    rows += MetadataRow(label, value)
+                }
+            }
+        flush()
+
+        return if (sections.isEmpty()) null else MediaMetadataInfo(mediaType, "MediaInfo", sections)
     }
 
     private fun tryJavaFx(file: File, mediaType: String): MediaMetadataResult? {
@@ -446,12 +502,16 @@ object MediaMetadataExtractor {
         }
 
         if (isWindows) {
-            val commonPaths = listOf(
-                "C:\\Program Files\\MediaInfo CLI\\MediaInfo.exe",
-                "C:\\Program Files (x86)\\MediaInfo CLI\\MediaInfo.exe",
-                "C:\\Program Files\\MediaInfo_CLI\\MediaInfo.exe",
-                "C:\\Program Files (x86)\\MediaInfo_CLI\\MediaInfo.exe"
-            )
+            val commonPaths = File.listRoots().flatMap { root ->
+                listOf(
+                    File(root, "Program Files\\MediaInfo CLI\\MediaInfo.exe").absolutePath,
+                    File(root, "Program Files (x86)\\MediaInfo CLI\\MediaInfo.exe").absolutePath,
+                    File(root, "Program Files\\MediaInfo_CLI\\MediaInfo.exe").absolutePath,
+                    File(root, "Program Files (x86)\\MediaInfo_CLI\\MediaInfo.exe").absolutePath,
+                    File(root, "Program Files\\MediaInfo_Cli\\MediaInfo.exe").absolutePath,
+                    File(root, "Program Files (x86)\\MediaInfo_Cli\\MediaInfo.exe").absolutePath
+                )
+            }
             commonPaths.forEach { candidate ->
                 checkCandidate(candidate)?.let { return it }
             }

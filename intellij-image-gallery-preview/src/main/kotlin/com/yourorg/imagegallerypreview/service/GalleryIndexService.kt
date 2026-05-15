@@ -19,7 +19,10 @@ import com.yourorg.imagegallerypreview.scanner.ProjectAssetScanner
 import com.yourorg.imagegallerypreview.util.AssetFileUtil
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.Callable
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 @Service(Service.Level.PROJECT)
@@ -40,6 +43,9 @@ class GalleryIndexService(private val project: Project) : Disposable {
         val metadataCount: Int = 0,
         val currentPath: String? = null,
         val fallbackSource: String? = null,
+        val elapsedMillis: Long = 0L,
+        val workerStatus: String? = null,
+        val diagnostic: String? = null,
         val timestampMillis: Long = System.currentTimeMillis(),
         val error: Throwable? = null
     )
@@ -59,6 +65,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     private val refreshRunning = AtomicBoolean(false)
     private val refreshPending = AtomicBoolean(false)
+    private val refreshPendingForce = AtomicBoolean(false)
 
     init {
         val connection = project.messageBus.connect(this)
@@ -76,7 +83,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
                 if (!relevant) return
 
-                refreshAsync {
+                syncAsync {
                     createdFiles.forEach { createdPath ->
                         handleCreatedFileDuplicateCheck(createdPath)
                     }
@@ -107,12 +114,21 @@ class GalleryIndexService(private val project: Project) : Disposable {
         statusListeners -= listener
     }
 
-    fun refreshAsync(afterRefresh: (() -> Unit)? = null) {
+    fun syncAsync(afterRefresh: (() -> Unit)? = null) {
+        startRefresh(forceReindex = false, afterRefresh = afterRefresh)
+    }
+
+    fun refreshAsync(forceReindex: Boolean = true, afterRefresh: (() -> Unit)? = null) {
+        startRefresh(forceReindex = forceReindex, afterRefresh = afterRefresh)
+    }
+
+    private fun startRefresh(forceReindex: Boolean, afterRefresh: (() -> Unit)? = null) {
         if (!refreshRunning.compareAndSet(false, true)) {
             refreshPending.set(true)
+            if (forceReindex) refreshPendingForce.set(true)
             return
         }
-        runRefresh(listOfNotNull(afterRefresh))
+        runRefresh(forceReindex, listOfNotNull(afterRefresh))
     }
 
     override fun dispose() {
@@ -120,12 +136,13 @@ class GalleryIndexService(private val project: Project) : Disposable {
         statusListeners.clear()
     }
 
-    private fun runRefresh(afterRefreshCallbacks: List<() -> Unit>) {
+    private fun runRefresh(forceReindex: Boolean, afterRefreshCallbacks: List<() -> Unit>) {
         publishStatus(
             IndexStatus(
                 state = IndexState.INDEXING,
-                message = "Discovering assets...",
-                phase = "discovering"
+                message = if (forceReindex) "Reindexing assets..." else "Discovering assets...",
+                phase = "discovering",
+                workerStatus = if (forceReindex) "forced_refresh" else "sync"
             )
         )
 
@@ -134,8 +151,11 @@ class GalleryIndexService(private val project: Project) : Disposable {
             val callbackQueue = afterRefreshCallbacks.toMutableList()
 
             try {
+                if (forceReindex) {
+                    MediaMetadataExtractor.clearCache()
+                }
                 val discoveredItems = scanner.scan()
-                val items = enrichItems(discoveredItems)
+                val items = enrichItems(discoveredItems, forceReindex, started)
                 cache = items
                 duplicateIndex = buildDuplicateIndex(items)
 
@@ -147,7 +167,9 @@ class GalleryIndexService(private val project: Project) : Disposable {
                         message = "Updated at ${timestampLabel()} (${items.size} items, ${elapsed}ms)",
                         phase = "complete",
                         indexedCount = items.size,
-                        metadataCount = items.size
+                        metadataCount = items.size,
+                        elapsedMillis = elapsed,
+                        workerStatus = "complete"
                     )
                 )
                 callbackQueue.forEach { invokeOnEdt(it) }
@@ -157,6 +179,9 @@ class GalleryIndexService(private val project: Project) : Disposable {
                         state = IndexState.FAILED,
                         message = "Failed: ${error.message ?: error.javaClass.simpleName}",
                         phase = "failed",
+                        elapsedMillis = System.currentTimeMillis() - started,
+                        workerStatus = "failed",
+                        diagnostic = error.javaClass.simpleName,
                         error = error
                     )
                 )
@@ -164,7 +189,8 @@ class GalleryIndexService(private val project: Project) : Disposable {
                 refreshRunning.set(false)
                 if (refreshPending.compareAndSet(true, false)) {
                     if (refreshRunning.compareAndSet(false, true)) {
-                        runRefresh(emptyList())
+                        val pendingForce = refreshPendingForce.getAndSet(false)
+                        runRefresh(pendingForce, emptyList())
                     }
                 }
             }
@@ -179,13 +205,19 @@ class GalleryIndexService(private val project: Project) : Disposable {
         }
     }
 
-    private fun enrichItems(items: List<GalleryAssetItem>): List<GalleryAssetItem> {
+    private fun enrichItems(
+        items: List<GalleryAssetItem>,
+        forceReindex: Boolean,
+        startedMillis: Long
+    ): List<GalleryAssetItem> {
         if (items.isEmpty()) {
             publishStatus(
                 IndexStatus(
                     state = IndexState.SUCCESS,
                     message = "Updated at ${timestampLabel()} (0 items)",
-                    phase = "complete"
+                    phase = "complete",
+                    elapsedMillis = System.currentTimeMillis() - startedMillis,
+                    workerStatus = "complete"
                 )
             )
             return emptyList()
@@ -197,37 +229,64 @@ class GalleryIndexService(private val project: Project) : Disposable {
                 message = "Resolving metadata...",
                 phase = "resolving_metadata",
                 indexedCount = items.size,
-                metadataCount = 0
+                metadataCount = 0,
+                elapsedMillis = System.currentTimeMillis() - startedMillis,
+                workerStatus = "metadata_parallel_$MAX_METADATA_PARALLELISM"
             )
         )
 
-        return items.mapIndexed { index, item ->
-            val metadata = MediaMetadataExtractor.extractFor(item)
-            val processed = index + 1
-            val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
-            val fallbackSource = metadata.info.source
-                .takeUnless { it.contains("MediaInfo", ignoreCase = true) }
+        val executor = Executors.newFixedThreadPool(minOf(MAX_METADATA_PARALLELISM, items.size))
+        val completion = ExecutorCompletionService<Pair<Int, GalleryAssetItem>>(executor)
+        val ordered = arrayOfNulls<GalleryAssetItem>(items.size)
 
-            if (processed == 1 || processed == items.size || processed % 10 == 0) {
-                publishStatus(
-                    IndexStatus(
-                        state = IndexState.INDEXING,
-                        message = "Resolving metadata...",
-                        phase = "resolving_metadata",
-                        indexedCount = items.size,
-                        metadataCount = processed,
-                        currentPath = normalizedPath,
-                        fallbackSource = fallbackSource
-                    )
-                )
+        try {
+            items.forEachIndexed { index, item ->
+                completion.submit(Callable {
+                    index to enrichItem(item, forceReindex)
+                })
             }
 
-            item.copy(
-                durationMillis = metadata.durationMillis ?: item.durationMillis,
-                imageInfo = metadata.imageInfo ?: item.imageInfo,
-                mediaInfo = metadata.info
-            )
+            var processed = 0
+            repeat(items.size) {
+                val (index, item) = completion.take().get()
+                ordered[index] = item
+                processed += 1
+
+                val fallbackSource = item.mediaInfo?.source
+                    ?.takeUnless { it.contains("MediaInfo", ignoreCase = true) }
+                val diagnostic = if (fallbackSource == null) null else "MediaInfo unavailable; used $fallbackSource"
+
+                if (processed == 1 || processed == items.size || processed % 10 == 0) {
+                    publishStatus(
+                        IndexStatus(
+                            state = IndexState.INDEXING,
+                            message = "Resolving metadata...",
+                            phase = "resolving_metadata",
+                            indexedCount = items.size,
+                            metadataCount = processed,
+                            currentPath = AssetFileUtil.normalizePath(item.absPath),
+                            fallbackSource = fallbackSource,
+                            elapsedMillis = System.currentTimeMillis() - startedMillis,
+                            workerStatus = "metadata_parallel_$MAX_METADATA_PARALLELISM",
+                            diagnostic = diagnostic
+                        )
+                    )
+                }
+            }
+        } finally {
+            executor.shutdownNow()
         }
+
+        return ordered.map { it ?: error("Missing enriched metadata result") }
+    }
+
+    private fun enrichItem(item: GalleryAssetItem, forceReindex: Boolean): GalleryAssetItem {
+        val metadata = MediaMetadataExtractor.extractFor(item, force = forceReindex)
+        return item.copy(
+            durationMillis = metadata.durationMillis ?: item.durationMillis,
+            imageInfo = metadata.imageInfo ?: item.imageInfo,
+            mediaInfo = metadata.info
+        )
     }
 
     private fun publishStatus(status: IndexStatus) {
@@ -321,7 +380,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
         }
 
         openAssetInEditor(selectedDuplicate.absPath)
-        refreshAsync()
+        syncAsync()
     }
 
     private fun selectDuplicateForOpen(duplicates: List<GalleryAssetItem>): GalleryAssetItem {
@@ -426,6 +485,8 @@ class GalleryIndexService(private val project: Project) : Disposable {
     }
 
     companion object {
+        private val MAX_METADATA_PARALLELISM = minOf(6, maxOf(2, Runtime.getRuntime().availableProcessors()))
+
         fun getInstance(project: Project): GalleryIndexService = project.getService(GalleryIndexService::class.java)
     }
 }

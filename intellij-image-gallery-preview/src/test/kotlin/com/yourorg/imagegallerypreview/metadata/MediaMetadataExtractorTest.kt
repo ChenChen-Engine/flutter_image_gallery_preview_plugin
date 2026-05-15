@@ -96,4 +96,59 @@ class MediaMetadataExtractorTest {
 
         assertEquals(62_000L, MediaMetadataExtractor.durationMillisFrom(info))
     }
+
+    @Test
+    fun `maps every primitive MediaInfo track field without truncation`() {
+        val json = buildString {
+            append("""{"media":{"track":[{"@type":"General"""")
+            for (index in 0 until 120) {
+                append(""","Field_$index":"value-$index"""")
+            }
+            append("}]}}")
+        }
+
+        val info = MediaMetadataExtractor.parseMediaInfoJson(json, "video")
+
+        assertEquals("MediaInfo", info?.source)
+        assertEquals(120, info?.sections?.first()?.rows?.size)
+        assertEquals("value-119", info?.sections?.first()?.rows?.last()?.value)
+    }
+
+    @Test
+    fun `parses MediaInfo text output when lowercase json flag returns default text`() {
+        val output = """
+            General
+            Complete name                            : E:\Work\Project\FlutterProject\shanjian\res\audio\countdown.mp3
+            Format                                   : MPEG Audio
+            File size                                : 85.8 KiB
+            Duration                                 : 5 s 59 ms
+            Overall bit rate mode                    : Constant
+            Overall bit rate                         : 128 kb/s
+            Genre                                    : Blues
+            Recorded date                            : 2024-05-09 11:15
+            Writing library                          : LAME3.100
+
+            Audio
+            Format                                   : MPEG Audio
+            Format version                           : Version 1
+            Format profile                           : Layer 3
+            Duration                                 : 5 s 60 ms
+            Bit rate                                 : 128 kb/s
+            Channel(s)                               : 2 channels
+            Sampling rate                            : 44.1 kHz
+            Compression mode                         : Lossy
+            Stream size                              : 79.1 KiB (92%)
+        """.trimIndent()
+
+        val info = MediaMetadataExtractor.parseMediaInfoOutput(output, "audio")
+
+        assertEquals("MediaInfo", info?.source)
+        assertEquals("85.8 KiB", info?.sections?.first { it.title == "General" }?.rows?.first { it.label == "File size" }?.value)
+        assertEquals("44.1 kHz", info?.sections?.first { it.title == "Audio" }?.rows?.first { it.label == "Sampling rate" }?.value)
+    }
+
+    @Test
+    fun `exposes cache controls for forced refresh`() {
+        MediaMetadataExtractor.clearCache()
+    }
 }

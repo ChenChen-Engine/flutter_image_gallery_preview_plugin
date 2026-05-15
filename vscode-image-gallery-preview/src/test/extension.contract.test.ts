@@ -49,6 +49,11 @@ suite('extension contracts', () => {
       currentPath: string | null;
       heartbeat: boolean;
       message?: string;
+      elapsedMillis?: number;
+      lastHeartbeatMillis?: number;
+      workerStatus?: string;
+      partialCount?: number;
+      diagnostic?: string;
     }) => Record<string, unknown>) | undefined;
     const formatWorkerDiagnostic = extensionModule.formatWorkerDiagnostic as ((progress: {
       phase: string;
@@ -67,7 +72,12 @@ suite('extension contracts', () => {
       count: 2,
       total: 5,
       currentPath: 'C:/demo/assets/audio/clip.mp3',
-      heartbeat: true
+      heartbeat: true,
+      elapsedMillis: 12_345,
+      lastHeartbeatMillis: 678,
+      workerStatus: 'active',
+      partialCount: 2,
+      diagnostic: 'worker heartbeat active'
     });
 
     assert.deepStrictEqual(
@@ -78,7 +88,12 @@ suite('extension contracts', () => {
         count: payload.count,
         total: payload.total,
         currentPath: payload.currentPath,
-        heartbeat: payload.heartbeat
+        heartbeat: payload.heartbeat,
+        elapsedMillis: payload.elapsedMillis,
+        lastHeartbeatMillis: payload.lastHeartbeatMillis,
+        workerStatus: payload.workerStatus,
+        partialCount: payload.partialCount,
+        diagnostic: payload.diagnostic
       },
       {
         type: 'loadingState',
@@ -87,7 +102,12 @@ suite('extension contracts', () => {
         count: 2,
         total: 5,
         currentPath: 'C:/demo/assets/audio/clip.mp3',
-        heartbeat: true
+        heartbeat: true,
+        elapsedMillis: 12_345,
+        lastHeartbeatMillis: 678,
+        workerStatus: 'active',
+        partialCount: 2,
+        diagnostic: 'worker heartbeat active'
       }
     );
     assert.match(String(payload.message), /2\/5/);

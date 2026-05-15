@@ -29,6 +29,8 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
   - filename
   - MD5
 - Card interactions:
+  - `Sync`: incremental rescan for added / removed / changed files, reusing valid indexed metadata
+  - `Refresh`: forced reindex, including metadata cache rebuild
   - click card: copy platform-specific resource token
   - `M`: copy MD5
   - `i`: open metadata dialog
@@ -39,6 +41,9 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
 - Metadata:
   - eager metadata indexing before items are shown
   - Windows MediaInfo CLI probe via `cmd /c mediaInfo --output=json <file>`
+  - MediaInfo text-output parsing when that CLI flag returns the default readable report instead of JSON
+  - bounded parallel metadata enrichment for faster MediaInfo / ffprobe extraction
+  - full primitive MediaInfo track fields are retained for the `i` dialog
   - built-in image metadata extraction
   - native / built-in image and media metadata merge
   - `ffprobe` fallback to fill missing stream and duration fields
@@ -52,7 +57,8 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
 
 - Both plugins use the shared web gallery and open audio/video in the OS default associated app instead of in-plugin playback.
 - IntelliJ resolves indexed metadata before publishing assets and reports structured loading phases for discovery vs metadata enrichment.
-- VSCode uses incremental worker-based scanning, partial publishes, and loading diagnostics with phase/count/path plus OutputChannel heartbeats for long scans.
+- IntelliJ shows a host-side loading fallback while JCEF is starting so the tool window is never blank.
+- VSCode uses incremental worker-based scanning, partial publishes, and loading diagnostics with phase/count/path, elapsed/heartbeat details, worker status, and OutputChannel diagnostics for long scans.
 - MediaInfo GUI is intentionally ignored. Only MediaInfo CLI is considered valid metadata tooling.
 - Full implementation details and iteration history are recorded in `IMPLEMENTATION_HANDOFF.md`.
 
@@ -74,9 +80,13 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
 
 ### VSCode
 
-1. Build VSIX.
-2. Run command: `Extensions: Install from VSIX...`
-3. Select VSIX from `vscode-image-gallery-preview/output/`.
+1. Build VSIX with `npm run package` from `vscode-image-gallery-preview`.
+2. In VSCode, uninstall any existing `Image Gallery Preview` extension build, then run `Developer: Reload Window`.
+3. Run `Extensions: Install from VSIX...`.
+4. Select the newest file from `vscode-image-gallery-preview/output/`.
+5. Run `Developer: Reload Window` again.
+6. Open `View > Output`, select `Image Gallery Preview`, then open the Image Gallery view.
+7. If the view remains loading, copy the visible loading details and the OutputChannel lines that start with `[sync]`, `[refresh]`, or `[worker:...]`.
 
 ## Build commands
 

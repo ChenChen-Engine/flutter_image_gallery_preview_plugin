@@ -48,12 +48,15 @@ export function findMediaInfoExecutable(
   }
 
   if (isWindows) {
-    const commonPaths = [
-      'C:\\Program Files\\MediaInfo CLI\\MediaInfo.exe',
-      'C:\\Program Files (x86)\\MediaInfo CLI\\MediaInfo.exe',
-      'C:\\Program Files\\MediaInfo_CLI\\MediaInfo.exe',
-      'C:\\Program Files (x86)\\MediaInfo_CLI\\MediaInfo.exe'
-    ];
+    const roots = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((drive) => `${drive}:\\`);
+    const commonPaths = roots.flatMap((root) => [
+      path.join(root, 'Program Files', 'MediaInfo CLI', 'MediaInfo.exe'),
+      path.join(root, 'Program Files (x86)', 'MediaInfo CLI', 'MediaInfo.exe'),
+      path.join(root, 'Program Files', 'MediaInfo_CLI', 'MediaInfo.exe'),
+      path.join(root, 'Program Files (x86)', 'MediaInfo_CLI', 'MediaInfo.exe'),
+      path.join(root, 'Program Files', 'MediaInfo_Cli', 'MediaInfo.exe'),
+      path.join(root, 'Program Files (x86)', 'MediaInfo_Cli', 'MediaInfo.exe')
+    ]);
     for (const candidate of commonPaths) {
       const found = checkCandidate(candidate);
       if (found) return found;

@@ -13,16 +13,28 @@ const SCAN_STALE_MS = 12_000;
 export interface LoadingStateMessage {
   count?: number;
   currentPath?: string | null;
+  diagnostic?: string;
+  elapsedMillis?: number;
   heartbeat?: boolean;
+  lastHeartbeatMillis?: number;
   loading: boolean;
   message: string;
+  partialCount?: number;
   phase?: string;
   total?: number;
   type: 'loadingState';
+  workerStatus?: string;
+}
+
+interface CachedMetadata {
+  durationMillis?: number | null;
+  imageInfo?: GalleryAssetItem['imageInfo'];
+  mediaInfo?: GalleryAssetItem['mediaInfo'];
 }
 
 function scanWorkspaceInWorker(
   roots: string[],
+  metadataCache: Array<[string, CachedMetadata]>,
   onProgress: (progress: ScanWorkerProgress) => void,
   onPartial: (items: GalleryAssetItem[], done: boolean) => void
 ): Promise<GalleryAssetItem[]> {
@@ -34,7 +46,7 @@ function scanWorkspaceInWorker(
     let timeout: NodeJS.Timeout | undefined;
     let staleTimer: NodeJS.Timeout | undefined;
 
-    const worker = new Worker(workerPath, { workerData: { roots } });
+    const worker = new Worker(workerPath, { workerData: { roots, metadataCache } });
 
     const resetStaleTimer = () => {
       if (staleTimer) clearTimeout(staleTimer);
@@ -44,8 +56,12 @@ function scanWorkspaceInWorker(
           count: 0,
           total: 0,
           currentPath: null,
+          elapsedMillis: 0,
           heartbeat: true,
-          message: 'Indexing is taking longer than expected; worker heartbeat is still active.'
+          lastHeartbeatMillis: SCAN_STALE_MS,
+          message: 'Indexing is taking longer than expected; worker heartbeat is still active.',
+          workerStatus: 'stale',
+          diagnostic: 'No worker message received within stale threshold.'
         });
       }, SCAN_STALE_MS);
     };
@@ -108,6 +124,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private infoCache = new Map<string, MediaMetadataInfo>();
   private readonly output = vscode.window.createOutputChannel('Image Gallery Preview');
   private refreshPending = false;
+  private refreshPendingForce = false;
   private refreshTask: Promise<void> | null = null;
   private started = false;
   private view?: vscode.WebviewView;
@@ -119,7 +136,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     if (this.started) return;
     this.started = true;
     this.setupWatchers();
-    void this.refresh();
+    void this.sync();
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -137,23 +154,34 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     this.start();
   }
 
-  async refresh(afterRefresh?: (items: GalleryAssetItem[]) => Promise<void> | void): Promise<void> {
+  async sync(afterRefresh?: (items: GalleryAssetItem[]) => Promise<void> | void): Promise<void> {
+    await this.startRefresh(false, afterRefresh);
+  }
+
+  async refresh(forceReindex = true, afterRefresh?: (items: GalleryAssetItem[]) => Promise<void> | void): Promise<void> {
+    await this.startRefresh(forceReindex, afterRefresh);
+  }
+
+  private async startRefresh(forceReindex: boolean, afterRefresh?: (items: GalleryAssetItem[]) => Promise<void> | void): Promise<void> {
     if (afterRefresh) this.afterRefreshQueue.push(afterRefresh);
 
     if (this.refreshTask) {
       this.refreshPending = true;
+      if (forceReindex) this.refreshPendingForce = true;
       await this.refreshTask;
       return;
     }
 
-    this.refreshTask = this.performRefresh();
+    this.refreshTask = this.performRefresh(forceReindex);
     try {
       await this.refreshTask;
     } finally {
       this.refreshTask = null;
       if (this.refreshPending) {
+        const pendingForce = this.refreshPendingForce;
         this.refreshPending = false;
-        await this.refresh();
+        this.refreshPendingForce = false;
+        await this.startRefresh(pendingForce, undefined);
       }
     }
   }
@@ -172,15 +200,20 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       if (!this.cachedItems.length) {
-        await this.refresh();
+        await this.sync();
       } else {
         await this.postLoadingState(false, '');
       }
       return;
     }
 
+    if (message?.type === 'sync') {
+      await this.sync();
+      return;
+    }
+
     if (message?.type === 'refresh') {
-      await this.refresh();
+      await this.refresh(message.force !== false);
       return;
     }
 
@@ -221,10 +254,12 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async performRefresh(): Promise<void> {
+  private async performRefresh(forceReindex: boolean): Promise<void> {
     const started = Date.now();
-    this.output.appendLine('[refresh] starting workspace index');
-    await this.postLoadingState(true, 'Indexing assets...');
+    const operation = forceReindex ? 'refresh' : 'sync';
+    this.output.appendLine(`[${operation}] starting workspace index`);
+    if (forceReindex) this.infoCache.clear();
+    await this.postLoadingState(true, forceReindex ? 'Reindexing assets...' : 'Syncing assets...');
 
     try {
       if (!vscode.workspace.workspaceFolders?.length) {
@@ -252,12 +287,13 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
         this.infoCache = primeInfoCacheFromItems(partialItems);
         await this.postAssets();
         if (!done) {
-          await this.postLoadingState(true, `Indexed ${partialItems.length} assets so far...`);
+          this.output.appendLine(`[${operation}] partial publish ${partialItems.length} assets`);
         }
       };
 
       const scannedItems = await scanWorkspaceInWorker(
         roots,
+        forceReindex ? [] : metadataCacheEntries(this.cachedItems),
         (progress) => {
           this.output.appendLine(formatWorkerDiagnostic(progress));
           void this.postLoadingState(progress);
@@ -275,7 +311,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       await this.postAssets();
       const elapsed = Date.now() - started;
       console.info(`[Image Gallery Preview] Indexed ${items.length} assets in ${elapsed}ms`);
-      this.output.appendLine(`[refresh] indexed ${items.length} assets in ${elapsed}ms`);
+      this.output.appendLine(`[${operation}] indexed ${items.length} assets in ${elapsed}ms`);
       await this.postLoadingState(false, `Updated ${new Date().toLocaleTimeString()}`);
 
       const callbacks = this.afterRefreshQueue.splice(0, this.afterRefreshQueue.length);
@@ -285,7 +321,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     } catch (error) {
       this.afterRefreshQueue = [];
       console.error('[Image Gallery Preview] Failed to index assets', error);
-      this.output.appendLine(`[refresh] failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.output.appendLine(`[${operation}] failed: ${error instanceof Error ? error.message : String(error)}`);
       await this.postLoadingState(false, `Failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -376,7 +412,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     try {
       await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { recursive: false, useTrash: false });
       await revealResourceByPath(selected.absPath);
-      await this.refresh();
+      await this.sync();
     } catch {
       await vscode.window.showErrorMessage(`Failed to delete duplicate file: ${absPath}`);
     }
@@ -403,13 +439,13 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
       watcher.onDidCreate((uri) => {
         if (!isInterestingFsPath(uri.fsPath)) return;
-        void this.refresh(async (items) => {
+        void this.sync(async (items) => {
           await this.handleCreatedFile(uri.fsPath, items);
         });
       });
 
       const onChange = (uri: vscode.Uri) => {
-        if (isInterestingFsPath(uri.fsPath)) void this.refresh();
+        if (isInterestingFsPath(uri.fsPath)) void this.sync();
       };
       watcher.onDidChange(onChange);
       watcher.onDidDelete(onChange);
@@ -471,6 +507,23 @@ export function primeInfoCacheFromItems(items: GalleryAssetItem[]): Map<string, 
   return seedMediaInfoCache(items);
 }
 
+function metadataCacheEntries(items: GalleryAssetItem[]): Array<[string, CachedMetadata]> {
+  return items
+    .filter((item) => item.mediaInfo || item.imageInfo)
+    .map((item): [string, CachedMetadata] => [
+      metadataCacheKey(item),
+      {
+        durationMillis: item.durationMillis,
+        imageInfo: item.imageInfo,
+        mediaInfo: item.mediaInfo
+      }
+    ]);
+}
+
+function metadataCacheKey(item: GalleryAssetItem): string {
+  return `${normalizePath(item.absPath)}|${item.mtime}|${item.mediaType}`;
+}
+
 export function toLoadingStateMessage(progress: ScanWorkerProgress): LoadingStateMessage {
   const currentName = progress.currentPath ? progress.currentPath.split('/').pop() || progress.currentPath : 'workspace';
   return {
@@ -481,14 +534,23 @@ export function toLoadingStateMessage(progress: ScanWorkerProgress): LoadingStat
     count: progress.count,
     total: progress.total,
     currentPath: progress.currentPath,
-    heartbeat: progress.heartbeat
+    diagnostic: progress.diagnostic,
+    elapsedMillis: progress.elapsedMillis,
+    heartbeat: progress.heartbeat,
+    lastHeartbeatMillis: progress.lastHeartbeatMillis,
+    partialCount: progress.partialCount,
+    workerStatus: progress.workerStatus
   };
 }
 
 export function formatWorkerDiagnostic(progress: ScanWorkerProgress): string {
   const suffix = progress.currentPath ? ` ${progress.currentPath}` : '';
   const marker = progress.heartbeat ? 'heartbeat' : 'progress';
-  return `[worker:${marker}] ${progress.phase} ${progress.count}/${progress.total}${suffix}`;
+  const elapsed = typeof progress.elapsedMillis === 'number' ? ` elapsed=${progress.elapsedMillis}ms` : '';
+  const partial = typeof progress.partialCount === 'number' ? ` partial=${progress.partialCount}` : '';
+  const status = progress.workerStatus ? ` status=${progress.workerStatus}` : '';
+  const diagnostic = progress.diagnostic ? ` diagnostic=${progress.diagnostic}` : '';
+  return `[worker:${marker}] ${progress.phase} ${progress.count}/${progress.total}${partial}${elapsed}${status}${diagnostic}${suffix}`;
 }
 
 function isInterestingFsPath(fsPath: string): boolean {

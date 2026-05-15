@@ -6,6 +6,6 @@ import com.yourorg.imagegallerypreview.service.GalleryIndexService
 
 class GalleryStartupActivity : StartupActivity.DumbAware {
     override fun runActivity(project: Project) {
-        GalleryIndexService.getInstance(project).refreshAsync()
+        GalleryIndexService.getInstance(project).syncAsync()
     }
 }

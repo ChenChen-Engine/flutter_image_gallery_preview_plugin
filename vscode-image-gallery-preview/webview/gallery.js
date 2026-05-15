@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
   const BATCH_SIZE = 160;
   const SCROLL_THRESHOLD = 720;
   const MAX_ACTIVE_ANIMATIONS = 8;
@@ -42,6 +42,7 @@
     zoomOut: document.getElementById('zoomOutButton'),
     zoomIn: document.getElementById('zoomInButton'),
     zoomReset: document.getElementById('zoomResetButton'),
+    sync: document.getElementById('syncButton'),
     refresh: document.getElementById('refreshButton'),
     status: document.getElementById('statusText'),
     root: document.getElementById('galleryRoot'),
@@ -184,56 +185,9 @@
     return value || 'Unknown';
   }
 
-  function mediaMime(item, mediaType) {
-    const format = String(item?.formatFamily || item?.format || '').toLowerCase();
-    const types = {
-      video: {
-        mp4: 'video/mp4',
-        m4v: 'video/mp4',
-        mov: 'video/quicktime',
-        webm: 'video/webm',
-        mkv: 'video/x-matroska',
-        avi: 'video/x-msvideo',
-        '3gp': 'video/3gpp',
-        '3gpp': 'video/3gpp',
-        mpeg: 'video/mpeg',
-        mpg: 'video/mpeg',
-        ts: 'video/mp2t',
-        m2ts: 'video/mp2t',
-        wmv: 'video/x-ms-wmv',
-        flv: 'video/x-flv'
-      },
-      audio: {
-        mp3: 'audio/mpeg',
-        m4a: 'audio/mp4',
-        aac: 'audio/aac',
-        wav: 'audio/wav',
-        ogg: 'audio/ogg',
-        opus: 'audio/ogg',
-        flac: 'audio/flac',
-        amr: 'audio/amr',
-        mid: 'audio/midi',
-        midi: 'audio/midi',
-        caf: 'audio/x-caf',
-        wma: 'audio/x-ms-wma',
-        aiff: 'audio/aiff',
-        aif: 'audio/aiff',
-        alac: 'audio/mp4',
-        mka: 'audio/x-matroska'
-      }
-    };
-    return types[mediaType]?.[format] || '';
-  }
-
-  function canPlayMedia(item, mediaType) {
-    const probe = mediaType === 'video' ? document.createElement('video') : document.createElement('audio');
-    const mime = mediaMime(item, mediaType);
-    if (!mime || typeof probe.canPlayType !== 'function') return true;
-    return probe.canPlayType(mime) !== '';
-  }
-
   function setLoading(loading, message = 'Indexing assets...', details = {}) {
     state.loading = !!loading;
+    elements.sync.disabled = state.loading;
     elements.refresh.disabled = state.loading;
     elements.loading.classList.toggle('visible', state.loading);
     elements.loadingMessage.textContent = message || 'Indexing assets...';
@@ -251,8 +205,16 @@
       : count != null || total != null
         ? `Progress: ${count || 0}${total != null ? ` / ${total}` : ''}`
         : '';
-    const fallbackLabel = details.fallbackSource || details.heartbeat;
-    const fallback = fallbackLabel ? `Detail: ${fallbackLabel}` : '';
+    const elapsed = Number.isFinite(details.elapsedMillis) ? `Elapsed: ${Math.round(details.elapsedMillis / 1000)}s` : '';
+    const heartbeat = Number.isFinite(details.lastHeartbeatMillis)
+      ? `Last heartbeat: ${Math.round(details.lastHeartbeatMillis / 1000)}s ago`
+      : details.heartbeat ? 'Heartbeat: active' : '';
+    const worker = details.workerStatus ? `Worker: ${details.workerStatus}` : '';
+    const partial = Number.isFinite(details.partialCount) ? `Partial items: ${details.partialCount}` : '';
+    const fallbackLabel = details.fallbackSource ? `Fallback: ${details.fallbackSource}` : '';
+    const diagnostic = details.diagnostic ? `Diagnostic: ${details.diagnostic}` : '';
+    const detailParts = [fallbackLabel, worker, heartbeat, elapsed, partial, diagnostic].filter(Boolean);
+    const fallback = detailParts.join(' | ');
     const currentPath = details.currentPath ? `Current: ${details.currentPath}` : '';
 
     elements.loadingPhase.textContent = phase;
@@ -509,7 +471,7 @@
     retry.textContent = '重新扫描';
     retry.addEventListener('click', () => {
       setLoading(true, 'Indexing assets...');
-      post('refresh');
+      post('refresh', { force: true });
     });
     failure.appendChild(text);
     failure.appendChild(retry);
@@ -735,6 +697,9 @@
     thumbWrap.appendChild(thumbButton);
     thumbWrap.appendChild(md5Button);
     thumbWrap.appendChild(infoButton);
+    if (item.renderKind === 'audio' || item.renderKind === 'video') {
+      thumbWrap.appendChild(durationBadge(item));
+    }
 
     const captionRow = document.createElement('div');
     captionRow.className = 'caption-row';
@@ -810,11 +775,10 @@
     play.className = 'media-play-button';
     play.textContent = '▶';
     play.title = '播放 / 停止';
-    const duration = durationBadge(item);
-    icon.textContent = 'AUDIO';
+    icon.textContent = '\u266a';
     play.textContent = '▶';
     play.title = 'Open with default app';
-    play.textContent = '>';
+    play.textContent = '\u25b6';
     play.tabIndex = 0;
     play.setAttribute('role', 'button');
 
@@ -833,7 +797,6 @@
     wrapper.appendChild(icon);
     wrapper.appendChild(label);
     wrapper.appendChild(play);
-    wrapper.appendChild(duration);
     container.appendChild(wrapper);
   }
 
@@ -860,73 +823,16 @@
       event.stopPropagation();
       post('openWithDefaultApp', { absPath: item.absPath });
     });
-    const duration = durationBadge(item);
-    icon.textContent = 'VIDEO';
+    icon.textContent = '\u25a3';
     play.textContent = '▶';
     play.title = 'Open with default app';
-    play.textContent = '>';
+    play.textContent = '\u25b6';
     play.tabIndex = 0;
     play.setAttribute('role', 'button');
     wrapper.appendChild(icon);
     wrapper.appendChild(label);
     wrapper.appendChild(play);
-    wrapper.appendChild(duration);
     container.appendChild(wrapper);
-  }
-
-  function createAudioController(item, playButton, badge) {
-    const audio = new Audio(item.previewSrc);
-    const controller = {
-      audio,
-      item,
-      playButton,
-      badge,
-      setPlaying(playing) {
-        playButton.textContent = playing ? '■' : '▶';
-        if (playing) updateAudioProgress(controller);
-      },
-      stop(reset) {
-        audio.pause();
-        if (reset) {
-          try {
-            audio.currentTime = 0;
-          } catch {
-            // ignore unsupported seek
-          }
-        }
-        controller.setPlaying(false);
-        updateAudioProgress(controller);
-        if (state.currentAudioController === controller) {
-          state.currentAudioController = null;
-        }
-      }
-    };
-
-    audio.addEventListener('loadedmetadata', () => {
-      updateDuration(item, badge, audio.duration);
-      updateAudioProgress(controller);
-    });
-    audio.addEventListener('timeupdate', () => updateAudioProgress(controller));
-    audio.addEventListener('ended', () => controller.stop(true));
-    audio.addEventListener('error', () => {
-      controller.setPlaying(false);
-      showUnsupportedMedia(item, 'audio');
-    });
-    return controller;
-  }
-
-  function stopCurrentAudio(exceptController = null) {
-    const current = state.currentAudioController;
-    if (current && current !== exceptController) {
-      current.stop(true);
-    }
-  }
-
-  function updateAudioProgress(controller) {
-    const current = Number.isFinite(controller.audio.currentTime) ? controller.audio.currentTime : 0;
-    const total = Number.isFinite(controller.audio.duration) && controller.audio.duration > 0 ? controller.audio.duration : durationSeconds(controller.item);
-    controller.badge.textContent = `${formatClock(current)}/${formatClock(total)}`;
-    controller.badge.classList.remove('hidden');
   }
 
   function durationBadge(item) {
@@ -935,180 +841,6 @@
     duration.textContent = item.durationLabel || '';
     duration.classList.toggle('hidden', !duration.textContent);
     return duration;
-  }
-
-  function updateDuration(item, badge, seconds) {
-    if (!Number.isFinite(seconds) || seconds <= 0) return;
-    const text = formatDuration(seconds);
-    item.durationLabel = text;
-    badge.textContent = text;
-    badge.classList.remove('hidden');
-  }
-
-  function durationSeconds(item) {
-    if (Number.isFinite(item.durationMillis) && item.durationMillis > 0) return item.durationMillis / 1000;
-    if (item.durationLabel) return parseDurationLabel(item.durationLabel);
-    return 0;
-  }
-
-  function parseDurationLabel(label) {
-    const parts = String(label || '').split(':').map((part) => Number(part));
-    if (parts.some((part) => !Number.isFinite(part))) return 0;
-    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return parts[0] || 0;
-  }
-
-  function formatDuration(seconds) {
-    const total = Math.floor(seconds);
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
-    const secs = total % 60;
-    return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}` : `${minutes}:${String(secs).padStart(2, '0')}`;
-  }
-
-  function formatClock(seconds) {
-    const safe = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
-    const hours = Math.floor(safe / 3600);
-    const minutes = Math.floor((safe % 3600) / 60);
-    const secs = safe % 60;
-    if (hours > 0) {
-      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-    }
-    return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  }
-
-  function openVideoDialog(item) {
-    if (!item.previewSrc) {
-      showUnsupportedMedia(item, 'video');
-      return;
-    }
-    if (!canPlayMedia(item, 'video')) {
-      showUnsupportedMedia(item, 'video');
-      return;
-    }
-    stopCurrentAudio();
-    const token = ++state.videoOpenToken;
-    resetVideoElement();
-    state.videoDialogItem = item;
-    elements.videoTitle.textContent = fileNameOf(item);
-    elements.videoPlayer.loop = false;
-    elements.videoPlayer.playbackRate = Number(elements.videoRateSelect.value || 1);
-    elements.videoCenterButton.textContent = '…';
-    let settled = false;
-    const readyTimeout = window.setTimeout(() => {
-      cleanup();
-      failVideoPlayback(item, token);
-    }, 10000);
-    const cleanup = () => {
-      window.clearTimeout(readyTimeout);
-      elements.videoPlayer.removeEventListener('loadeddata', onReady);
-      elements.videoPlayer.removeEventListener('canplay', onReady);
-      elements.videoPlayer.removeEventListener('error', onError);
-    };
-    const onReady = () => {
-      if (settled || token !== state.videoOpenToken) return;
-      settled = true;
-      cleanup();
-      elements.videoModal.classList.remove('hidden');
-      updateVideoProgress();
-      elements.videoPlayer.play().catch((error) => {
-        if (error?.name === 'NotAllowedError') {
-          updateVideoProgress();
-          return;
-        }
-        failVideoPlayback(item, token);
-      });
-    };
-    const onError = () => {
-      cleanup();
-      failVideoPlayback(item, token);
-    };
-    elements.videoPlayer.addEventListener('loadeddata', onReady);
-    elements.videoPlayer.addEventListener('canplay', onReady);
-    elements.videoPlayer.addEventListener('error', onError, { once: true });
-    elements.videoPlayer.src = item.previewSrc;
-    elements.videoPlayer.load();
-  }
-
-  function closeVideoDialog() {
-    state.videoOpenToken += 1;
-    resetVideoElement();
-    elements.videoModal.classList.add('hidden');
-    state.videoDialogItem = null;
-    updateVideoProgress();
-  }
-
-  function resetVideoElement() {
-    state.videoErrorSuppressed = true;
-    elements.videoPlayer.pause();
-    elements.videoPlayer.removeAttribute('src');
-    elements.videoPlayer.load();
-    state.videoErrorSuppressed = false;
-  }
-
-  function failVideoPlayback(item, token) {
-    if (token && token !== state.videoOpenToken) return;
-    state.videoOpenToken += 1;
-    resetVideoElement();
-    elements.videoModal.classList.add('hidden');
-    state.videoDialogItem = null;
-    updateVideoProgress();
-    showUnsupportedMedia(item, 'video');
-  }
-
-  function toggleVideoPlayback() {
-    if (!state.videoDialogItem) return;
-    if (elements.videoPlayer.paused) {
-      const item = state.videoDialogItem;
-      const token = state.videoOpenToken;
-      elements.videoPlayer.play().catch((error) => {
-        if (error?.name === 'NotAllowedError') {
-          updateVideoProgress();
-          return;
-        }
-        failVideoPlayback(item, token);
-      });
-    } else {
-      elements.videoPlayer.pause();
-    }
-  }
-
-  function updateVideoProgress() {
-    const video = elements.videoPlayer;
-    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : durationSeconds(state.videoDialogItem || {});
-    const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-    const percent = duration > 0 ? Math.max(0, Math.min(100, (current / duration) * 100)) : 0;
-    elements.videoProgressFill.style.width = `${percent}%`;
-    elements.videoTimeLabel.textContent = `${formatClock(current)} / ${formatClock(duration)}`;
-    elements.videoCenterButton.textContent = video.paused ? '▶' : '❚❚';
-    elements.videoPlayer.closest('.video-stage')?.classList.toggle('playing', !video.paused && !video.ended);
-  }
-
-  function seekVideoFromEvent(event) {
-    const rect = elements.videoProgressTrack.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
-    const duration = elements.videoPlayer.duration;
-    if (Number.isFinite(duration) && duration > 0) {
-      elements.videoPlayer.currentTime = ratio * duration;
-      updateVideoProgress();
-    }
-  }
-
-  function showUnsupportedMedia(item, mediaType) {
-    state.unsupportedItem = item;
-    const format = String(item?.formatFamily || item?.format || '').toUpperCase() || 'Unknown';
-    elements.unsupportedMessage.textContent = `暂不支持播放该格式${mediaType === 'video' ? '视频' : '音频'}：${format}`;
-    elements.unsupportedModal.classList.remove('hidden');
-  }
-
-  function closeUnsupportedModal() {
-    state.unsupportedItem = null;
-    elements.unsupportedModal.classList.add('hidden');
-  }
-
-  function unsupportedPath() {
-    return state.unsupportedItem?.absPath || '';
   }
 
   function renderLottie(host, item) {
@@ -1598,9 +1330,14 @@
     setTileSize(DEFAULT_TILE_SIZE);
   });
 
+  elements.sync.addEventListener('click', () => {
+    setLoading(true, 'Syncing assets...');
+    post('sync');
+  });
+
   elements.refresh.addEventListener('click', () => {
     setLoading(true, 'Indexing assets...');
-    post('refresh');
+    post('refresh', { force: true });
   });
 
   elements.modal.addEventListener('click', (event) => {

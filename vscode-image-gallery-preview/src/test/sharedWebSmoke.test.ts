@@ -18,6 +18,26 @@ suite('shared web smoke', () => {
       assert.strictEqual(synced, shared, `expected synced ${assetName} to match gallery-web/${assetName}`);
     }
   });
+
+  test('shared toolbar exposes Sync and Refresh actions', () => {
+    const html = fs.readFileSync(sharedPath('index.html'), 'utf8');
+    const script = fs.readFileSync(sharedPath('gallery.js'), 'utf8');
+
+    assert.match(html, /id="syncButton"/);
+    assert.match(html, /id="refreshButton"/);
+    assert.match(script, /post\('sync'/);
+    assert.match(script, /post\('refresh',\s*\{\s*force:\s*true\s*\}\)/);
+  });
+
+  test('shared media preview keeps external playback without stale web player code', () => {
+    const script = fs.readFileSync(sharedPath('gallery.js'), 'utf8');
+
+    assert.match(script, /openWithDefaultApp/);
+    assert.match(script, /\\u25b6/);
+    assert.doesNotMatch(script, /createAudioController/);
+    assert.doesNotMatch(script, /openVideoDialog/);
+    assert.doesNotMatch(script, /showUnsupportedMedia/);
+  });
 });
 
 function extensionRoot(): string {

@@ -92,6 +92,96 @@ suite('media metadata helper', () => {
     assert.strictEqual(rowValue(result, 'Video', 'Stream size'), '2.00 MiB');
   });
 
+  test('tries MediaInfo CLI before built-in and ffprobe metadata', async () => {
+    const metadataModule = require('../mediaMetadata') as Record<string, unknown>;
+    const resolveIndexedMediaInfo = metadataModule.resolveIndexedMediaInfo as ((item: GalleryAssetItem, deps: {
+      loadMediaInfoCli: (item: GalleryAssetItem) => Promise<MediaMetadataInfo | null>;
+      loadFfprobe: (item: GalleryAssetItem) => Promise<MediaMetadataInfo | null>;
+      loadBuiltIn: (item: GalleryAssetItem) => Promise<MediaMetadataInfo>;
+      loadImageInfo: () => Promise<never>;
+    }) => Promise<MediaMetadataInfo>) | undefined;
+
+    assert.ok(resolveIndexedMediaInfo, 'expected mediaMetadata helper to export resolveIndexedMediaInfo');
+
+    const calls: string[] = [];
+    await resolveIndexedMediaInfo!(asset('mp4', 'video'), {
+      loadMediaInfoCli: async () => {
+        calls.push('mediainfo');
+        return info('video', 'MediaInfo (PATH)', { General: { Format: 'MPEG-4' } });
+      },
+      loadFfprobe: async () => {
+        calls.push('ffprobe');
+        return info('video', 'ffprobe', { General: { Duration: '1 min 5 s' } });
+      },
+      loadBuiltIn: async () => {
+        calls.push('built-in');
+        return info('video', 'Built-in', { General: { 'File size': '2.00 MiB' } });
+      },
+      loadImageInfo: async () => {
+        throw new Error('not expected for video');
+      }
+    });
+
+    assert.strictEqual(calls[0], 'mediainfo');
+  });
+
+  test('maps every primitive MediaInfo row without truncating at eighty entries', () => {
+    const metadataModule = require('../mediaMetadata') as Record<string, unknown>;
+    const mediaInfoTrackToSection = metadataModule.mediaInfoTrackToSection as ((track: Record<string, unknown>) => {
+      title: string;
+      rows: Array<{ label: string; value: string }>;
+    }) | undefined;
+
+    assert.ok(mediaInfoTrackToSection, 'expected mediaInfoTrackToSection to be exported for parser tests');
+
+    const track: Record<string, unknown> = { '@type': 'General' };
+    for (let index = 0; index < 120; index++) {
+      track[`Field_${index}`] = `value-${index}`;
+    }
+
+    const section = mediaInfoTrackToSection!(track);
+
+    assert.strictEqual(section.rows.length, 120);
+    assert.strictEqual(section.rows[119].value, 'value-119');
+  });
+
+  test('parses MediaInfo text output when lowercase json flag returns default text', () => {
+    const metadataModule = require('../mediaMetadata') as Record<string, unknown>;
+    const parseMediaInfoOutput = metadataModule.parseMediaInfoOutput as ((output: string, mediaType: 'audio') => MediaMetadataInfo | null) | undefined;
+
+    assert.ok(parseMediaInfoOutput, 'expected parseMediaInfoOutput to be exported for parser tests');
+
+    const output = [
+      'General',
+      'Complete name                            : E:\\Work\\Project\\FlutterProject\\shanjian\\res\\audio\\countdown.mp3',
+      'Format                                   : MPEG Audio',
+      'File size                                : 85.8 KiB',
+      'Duration                                 : 5 s 59 ms',
+      'Overall bit rate mode                    : Constant',
+      'Overall bit rate                         : 128 kb/s',
+      'Genre                                    : Blues',
+      'Recorded date                            : 2024-05-09 11:15',
+      'Writing library                          : LAME3.100',
+      '',
+      'Audio',
+      'Format                                   : MPEG Audio',
+      'Format version                           : Version 1',
+      'Format profile                           : Layer 3',
+      'Duration                                 : 5 s 60 ms',
+      'Bit rate                                 : 128 kb/s',
+      'Channel(s)                               : 2 channels',
+      'Sampling rate                            : 44.1 kHz',
+      'Compression mode                         : Lossy',
+      'Stream size                              : 79.1 KiB (92%)'
+    ].join('\n');
+
+    const info = parseMediaInfoOutput!(output, 'audio');
+
+    assert.strictEqual(info?.source, 'MediaInfo');
+    assert.strictEqual(rowValue(info!, 'General', 'File size'), '85.8 KiB');
+    assert.strictEqual(rowValue(info!, 'Audio', 'Sampling rate'), '44.1 kHz');
+  });
+
   test('falls back to ffprobe and built-in metadata when MediaInfo is unavailable', async () => {
     const metadataModule = require('../mediaMetadata') as Record<string, unknown>;
     const resolveIndexedMediaInfo = metadataModule.resolveIndexedMediaInfo as ((item: GalleryAssetItem, deps: {
