@@ -2,6 +2,29 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 
+export function createMediaInfoExecutableResolver(
+  finder: () => string | null = () => findMediaInfoExecutable()
+): () => string | null {
+  let resolved = false;
+  let cached: string | null = null;
+  return () => {
+    if (resolved) return cached;
+    cached = finder();
+    resolved = true;
+    return cached;
+  };
+}
+
+let mediaInfoExecutableResolver = createMediaInfoExecutableResolver();
+
+export function resolveMediaInfoExecutable(): string | null {
+  return mediaInfoExecutableResolver();
+}
+
+export function clearMediaInfoExecutableCache(): void {
+  mediaInfoExecutableResolver = createMediaInfoExecutableResolver();
+}
+
 export function findMediaInfoExecutable(
   env: NodeJS.ProcessEnv = process.env,
   exists: (candidate: string) => boolean = fs.existsSync,

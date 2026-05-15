@@ -283,6 +283,36 @@ suite('media metadata helper', () => {
     assert.strictEqual(rowValue(result, 'Audio', 'Sampling rate'), '48 kHz');
     assert.strictEqual(rowValue(result, 'Audio', 'Stream size'), '512 KiB');
   });
+
+  test('preserves MediaInfo failure reason while merging fallback rows', async () => {
+    const metadataModule = require('../mediaMetadata') as Record<string, unknown>;
+    const resolveIndexedMediaInfo = metadataModule.resolveIndexedMediaInfo as ((item: GalleryAssetItem, deps: {
+      loadMediaInfoCli: (item: GalleryAssetItem) => Promise<MediaMetadataInfo | null>;
+      loadFfprobe: (item: GalleryAssetItem) => Promise<MediaMetadataInfo | null>;
+      loadBuiltIn: (item: GalleryAssetItem) => Promise<MediaMetadataInfo>;
+      loadImageInfo: () => Promise<never>;
+    }) => Promise<MediaMetadataInfo>) | undefined;
+
+    assert.ok(resolveIndexedMediaInfo, 'expected mediaMetadata helper to export resolveIndexedMediaInfo');
+
+    const result = await resolveIndexedMediaInfo!(asset('mp3', 'audio'), {
+      loadMediaInfoCli: async () => info('audio', 'MediaInfo (parse-empty)', {}),
+      loadFfprobe: async () => null,
+      loadBuiltIn: async () => info('audio', 'Built-in (fallback)', {
+        General: {
+          Format: 'MP3',
+          'File size': '512 KiB'
+        }
+      }),
+      loadImageInfo: async () => {
+        throw new Error('not expected for audio');
+      }
+    });
+
+    assert.strictEqual(result.source, 'MediaInfo (parse-empty)');
+    assert.strictEqual(rowValue(result, 'General', 'Format'), 'MP3');
+    assert.strictEqual(rowValue(result, 'General', 'File size'), '512 KiB');
+  });
 });
 
 function info(

@@ -53,6 +53,7 @@ suite('extension contracts', () => {
       lastHeartbeatMillis?: number;
       workerStatus?: string;
       partialCount?: number;
+      fallbackSource?: string;
       diagnostic?: string;
     }) => Record<string, unknown>) | undefined;
     const formatWorkerDiagnostic = extensionModule.formatWorkerDiagnostic as ((progress: {
@@ -62,6 +63,7 @@ suite('extension contracts', () => {
       currentPath: string | null;
       heartbeat: boolean;
       message?: string;
+      fallbackSource?: string;
     }) => string) | undefined;
 
     assert.ok(toLoadingStateMessage, 'expected extension to export toLoadingStateMessage for contract tests');
@@ -77,6 +79,7 @@ suite('extension contracts', () => {
       lastHeartbeatMillis: 678,
       workerStatus: 'active',
       partialCount: 2,
+      fallbackSource: 'Built-in (fallback)',
       diagnostic: 'worker heartbeat active'
     });
 
@@ -93,6 +96,7 @@ suite('extension contracts', () => {
         lastHeartbeatMillis: payload.lastHeartbeatMillis,
         workerStatus: payload.workerStatus,
         partialCount: payload.partialCount,
+        fallbackSource: payload.fallbackSource,
         diagnostic: payload.diagnostic
       },
       {
@@ -107,6 +111,7 @@ suite('extension contracts', () => {
         lastHeartbeatMillis: 678,
         workerStatus: 'active',
         partialCount: 2,
+        fallbackSource: 'Built-in (fallback)',
         diagnostic: 'worker heartbeat active'
       }
     );
@@ -118,13 +123,15 @@ suite('extension contracts', () => {
       count: 2,
       total: 5,
       currentPath: 'C:/demo/assets/audio/clip.mp3',
-      heartbeat: true
+      heartbeat: true,
+      fallbackSource: 'Built-in (fallback)'
     });
 
     assert.match(diagnostic, /heartbeat/i);
     assert.match(diagnostic, /enrich/i);
     assert.match(diagnostic, /2\/5/);
     assert.match(diagnostic, /clip\.mp3/);
+    assert.match(diagnostic, /fallback=Built-in/);
   });
 });
 

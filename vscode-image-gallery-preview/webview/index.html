@@ -52,12 +52,12 @@
 
   <div id="loadingOverlay" class="loading-overlay visible">
     <div class="loading-card">
-      <div class="spinner" aria-hidden="true"></div>
       <div id="loadingMessage" class="loading-message">Indexing assets...</div>
       <div class="loading-details">
         <div id="loadingPhase" class="loading-detail hidden"></div>
         <div id="loadingCounts" class="loading-detail hidden"></div>
         <div id="loadingFallback" class="loading-detail hidden"></div>
+        <div id="loadingCurrent" class="loading-detail hidden"></div>
         <div id="loadingPath" class="loading-path hidden"></div>
       </div>
     </div>
@@ -70,7 +70,10 @@
     <div class="modal-card">
       <div class="modal-header">
         <h2 id="infoTitle">Media Info</h2>
-        <button class="modal-close" type="button" data-close-modal aria-label="Close">x</button>
+        <div class="modal-actions">
+          <button id="infoRefreshButton" class="modal-action modal-refresh" type="button" aria-label="Refresh media info" title="Refresh media info">R</button>
+          <button class="modal-action modal-close" type="button" data-close-modal aria-label="Close">x</button>
+        </div>
       </div>
       <div id="infoContent" class="info-content"></div>
     </div>

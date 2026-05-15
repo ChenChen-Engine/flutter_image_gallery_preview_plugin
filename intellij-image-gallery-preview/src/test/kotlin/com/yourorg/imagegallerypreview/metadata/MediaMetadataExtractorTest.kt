@@ -154,6 +154,31 @@ class MediaMetadataExtractorTest {
     }
 
     @Test
+    fun `caches MediaInfo executable discovery per resolver session`() {
+        var probes = 0
+        val resolver = MediaMetadataExtractor.createMediaInfoExecutableResolver {
+            probes += 1
+            "D:/Tools/MediaInfo/MediaInfo.exe"
+        }
+
+        assertEquals("D:/Tools/MediaInfo/MediaInfo.exe", resolver())
+        assertEquals("D:/Tools/MediaInfo/MediaInfo.exe", resolver())
+        assertEquals(1, probes)
+    }
+
+    @Test
+    fun `classifies MediaInfo failure reasons for diagnostics`() {
+        val info = MediaMetadataInfo(
+            mediaType = "audio",
+            source = "MediaInfo (parse-empty)",
+            sections = emptyList()
+        )
+
+        assertTrue(MediaMetadataExtractor.isRetryableFallback(info))
+        assertEquals("parse-empty", MediaMetadataExtractor.failureReason(info))
+    }
+
+    @Test
     fun `creates timeout fallback metadata for unresolved media item`() {
         val item = com.yourorg.imagegallerypreview.model.GalleryAssetItem(
             sourceType = com.yourorg.imagegallerypreview.model.SourceType.FLUTTER_ASSET,

@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import exifReader from 'exif-reader';
 import sharp from 'sharp';
 import { GalleryAssetItem, ImageInfo, MediaMetadataInfo, MediaType, MetadataRow, MetadataSection } from './shared/types';
-import { findMediaInfoExecutable } from './mediaInfoTool';
+import { resolveMediaInfoExecutable } from './mediaInfoTool';
 
 const execFileAsync = promisify(execFile);
 const MEDIAINFO_DOWNLOAD_URL = 'https://mediaarea.net/en/MediaInfo/Download/Windows';
@@ -208,7 +208,7 @@ async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<Medi
     });
   }
 
-  const executable = findMediaInfoExecutable();
+  const executable = resolveMediaInfoExecutable();
   if (executable) {
     commands.push({
       file: executable,
@@ -225,17 +225,83 @@ async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<Medi
     });
   }
 
+  let bestFailure: MediaInfoFailure | null = commands.length
+    ? null
+    : { reason: 'command-failed', source: 'MediaInfo' };
+
   for (const command of commands) {
-    try {
-      const { stdout } = await execFileAsync(command.file, command.args, { windowsHide: true, timeout: 8000 });
-      const info = parseMediaInfoOutput(stdout, mediaType, command.source);
-      if (info) return info;
-    } catch {
-      // try the next command candidate
+    const result = await runMediaInfoCommand(command);
+    if (result.reason !== 'ok') {
+      bestFailure = preferMediaInfoFailure(bestFailure, { reason: result.reason, source: command.source });
+      continue;
     }
+
+    const info = parseMediaInfoOutput(result.stdout, mediaType, command.source);
+    if (info) return info;
+    bestFailure = preferMediaInfoFailure(bestFailure, { reason: 'parse-empty', source: command.source });
   }
 
-  return null;
+  return mediaInfoFailureInfo(mediaType, bestFailure?.reason ?? 'fallback', bestFailure?.source ?? 'MediaInfo');
+}
+
+type MediaInfoFailureReason = 'timeout' | 'parse-empty' | 'command-failed' | 'fallback';
+
+interface MediaInfoFailure {
+  reason: MediaInfoFailureReason;
+  source: string;
+}
+
+interface MediaInfoCommandResult {
+  reason: 'ok' | 'timeout' | 'command-failed';
+  stdout: string;
+}
+
+async function runMediaInfoCommand(command: { file: string; args: string[] }): Promise<MediaInfoCommandResult> {
+  try {
+    const { stdout } = await execFileAsync(command.file, command.args, {
+      windowsHide: true,
+      timeout: 8000,
+      maxBuffer: 4 * 1024 * 1024
+    });
+    return { reason: 'ok', stdout };
+  } catch (error: unknown) {
+    const candidate = error as { code?: unknown; killed?: boolean; message?: string; signal?: string; stdout?: string | Buffer };
+    const timedOut = candidate.code === 'ETIMEDOUT' ||
+      candidate.killed === true ||
+      candidate.signal === 'SIGTERM' ||
+      String(candidate.message ?? '').toLowerCase().includes('timed out');
+    return {
+      reason: timedOut ? 'timeout' : 'command-failed',
+      stdout: candidate.stdout ? String(candidate.stdout) : ''
+    };
+  }
+}
+
+function preferMediaInfoFailure(current: MediaInfoFailure | null, next: MediaInfoFailure): MediaInfoFailure {
+  if (!current) return next;
+  return mediaInfoFailurePriority(next.reason) > mediaInfoFailurePriority(current.reason) ? next : current;
+}
+
+function mediaInfoFailurePriority(reason: MediaInfoFailureReason): number {
+  switch (reason) {
+    case 'timeout':
+      return 4;
+    case 'parse-empty':
+      return 3;
+    case 'command-failed':
+      return 2;
+    case 'fallback':
+      return 1;
+  }
+}
+
+function mediaInfoFailureInfo(mediaType: MediaType, reason: MediaInfoFailureReason, source: string): MediaMetadataInfo {
+  return {
+    mediaType,
+    source: `${source} (${reason})`,
+    sections: [],
+    installHint: installHint()
+  };
 }
 
 export function parseMediaInfoOutput(output: string, mediaType: MediaType, source = 'MediaInfo'): MediaMetadataInfo | null {
@@ -367,7 +433,7 @@ function fallbackMediaInfo(absPath: string, mediaType: MediaType, item?: Gallery
   ];
   return {
     mediaType,
-    source: 'Built-in',
+    source: 'Built-in (fallback)',
     sections: [
       { title: 'General', rows: generalRows },
       { title: mediaType === 'video' ? 'Video' : 'Audio', rows: streamRows }

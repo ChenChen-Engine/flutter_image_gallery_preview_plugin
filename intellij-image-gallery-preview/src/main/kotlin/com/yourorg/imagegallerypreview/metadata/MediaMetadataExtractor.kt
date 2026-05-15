@@ -30,15 +30,56 @@ object MediaMetadataExtractor {
 
     private val cache = ConcurrentHashMap<String, MediaMetadataResult>()
     private val fxInitialized = AtomicBoolean(false)
+    private var mediaInfoExecutableResolver: () -> String? = createMediaInfoExecutableResolver()
 
     fun infoFor(item: GalleryAssetItem, force: Boolean = false): MediaMetadataInfo = extractFor(item, force).info
 
     fun isTimeoutFallback(info: MediaMetadataInfo?): Boolean {
-        return info?.source?.startsWith(TIMEOUT_FALLBACK_SOURCE, ignoreCase = true) == true
+        return isRetryableFallback(info)
+    }
+
+    fun isRetryableFallback(info: MediaMetadataInfo?): Boolean {
+        val source = info?.source?.lowercase(Locale.ROOT) ?: return false
+        return source.startsWith(TIMEOUT_FALLBACK_SOURCE.lowercase(Locale.ROOT)) ||
+            source.contains("timeout") ||
+            source.contains("parse-empty") ||
+            source.contains("command-failed") ||
+            source.contains("fallback")
+    }
+
+    fun failureReason(info: MediaMetadataInfo?): String? {
+        val source = info?.source?.lowercase(Locale.ROOT) ?: return null
+        return when {
+            source.startsWith(TIMEOUT_FALLBACK_SOURCE.lowercase(Locale.ROOT)) || source.contains("timed out") || source.contains("timeout") -> "timeout"
+            source.contains("parse-empty") -> "parse-empty"
+            source.contains("command-failed") -> "command-failed"
+            source.contains("fallback") -> "fallback"
+            else -> null
+        }
     }
 
     fun clearCache() {
         cache.clear()
+    }
+
+    internal fun createMediaInfoExecutableResolver(
+        finder: () -> String? = { findMediaInfoExecutable() }
+    ): () -> String? {
+        var resolved = false
+        var cached: String? = null
+        return {
+            if (!resolved) {
+                cached = finder()
+                resolved = true
+            }
+            cached
+        }
+    }
+
+    internal fun resolveMediaInfoExecutable(): String? = mediaInfoExecutableResolver()
+
+    internal fun clearMediaInfoExecutableCache() {
+        mediaInfoExecutableResolver = createMediaInfoExecutableResolver()
     }
 
     fun extractFor(item: GalleryAssetItem, force: Boolean = false): MediaMetadataResult {
@@ -73,24 +114,29 @@ object MediaMetadataExtractor {
                 absPath = AssetFileUtil.normalizePath(item.absPath)
             )
             return MediaMetadataResult(
-                info = imageInfo.toMediaInfo(source = "$TIMEOUT_FALLBACK_SOURCE ($reason)"),
+                info = imageInfo.toMediaInfo(source = timeoutFallbackSource(reason)),
                 imageInfo = imageInfo
             )
         }
 
         return MediaMetadataResult(
             info = fallbackInfo(file, item, durationMillis).copy(
-                source = "$TIMEOUT_FALLBACK_SOURCE ($reason)",
+                source = timeoutFallbackSource(reason),
                 installHint = null
             ),
             durationMillis = durationMillis
         )
     }
 
+    private fun timeoutFallbackSource(reason: String): String {
+        val label = if (reason.contains("timed out", ignoreCase = true)) "timeout" else "fallback"
+        return "MediaInfo ($label: $reason; click i to retry)"
+    }
+
     internal fun mediaInfoProbeCommands(
         absPath: String,
         osName: String = System.getProperty("os.name").orEmpty(),
-        configuredExecutable: String? = findMediaInfoExecutable()
+        configuredExecutable: String? = resolveMediaInfoExecutable()
     ): List<List<String>> {
         val commands = mutableListOf<List<String>>()
         val isWindows = osName.lowercase(Locale.ROOT).contains("win")
@@ -189,11 +235,56 @@ object MediaMetadataExtractor {
 
     private fun tryMediaInfo(file: File, mediaType: String): MediaMetadataInfo? {
         val commands = mediaInfoProbeCommands(file.absolutePath)
-        for (command in commands) {
-            val output = runCommand(command) ?: continue
-            return parseMediaInfoOutput(output, mediaType) ?: continue
+        var bestFailure: MediaInfoFailure? = if (commands.isEmpty()) {
+            MediaInfoFailure(MediaInfoFailureReason.COMMAND_FAILED)
+        } else {
+            null
         }
-        return null
+        for (command in commands) {
+            when (val result = runMediaInfoCommand(command)) {
+                is MediaInfoCommandResult.Success -> {
+                    val info = parseMediaInfoOutput(result.output, mediaType)
+                    if (info != null) return info
+                    bestFailure = preferMediaInfoFailure(bestFailure, MediaInfoFailure(MediaInfoFailureReason.PARSE_EMPTY))
+                }
+
+                is MediaInfoCommandResult.Failed -> {
+                    bestFailure = preferMediaInfoFailure(bestFailure, MediaInfoFailure(result.reason))
+                }
+            }
+        }
+        return mediaInfoFailureInfo(mediaType, bestFailure?.reason ?: MediaInfoFailureReason.FALLBACK)
+    }
+
+    private enum class MediaInfoFailureReason(val label: String, val priority: Int) {
+        TIMEOUT("timeout", 4),
+        PARSE_EMPTY("parse-empty", 3),
+        COMMAND_FAILED("command-failed", 2),
+        FALLBACK("fallback", 1)
+    }
+
+    private data class MediaInfoFailure(val reason: MediaInfoFailureReason)
+
+    private sealed class MediaInfoCommandResult {
+        data class Success(val output: String) : MediaInfoCommandResult()
+        data class Failed(val reason: MediaInfoFailureReason) : MediaInfoCommandResult()
+    }
+
+    private fun preferMediaInfoFailure(current: MediaInfoFailure?, next: MediaInfoFailure): MediaInfoFailure {
+        return if (current == null || next.reason.priority > current.reason.priority) next else current
+    }
+
+    private fun mediaInfoFailureInfo(mediaType: String, reason: MediaInfoFailureReason): MediaMetadataInfo {
+        return MediaMetadataInfo(
+            mediaType = mediaType,
+            source = "MediaInfo (${reason.label})",
+            sections = emptyList(),
+            installHint = InstallHint(
+                text = "Install MediaInfo CLI for richer metadata.",
+                actionLabel = "Download CLI",
+                url = MEDIAINFO_DOWNLOAD_URL
+            )
+        )
     }
 
     internal fun parseMediaInfoOutput(output: String, mediaType: String): MediaMetadataInfo? {
@@ -400,7 +491,7 @@ object MediaMetadataExtractor {
         val streamTitle = if (item.mediaType == "video") "Video" else "Audio"
         return MediaMetadataInfo(
             mediaType = item.mediaType,
-            source = "Built-in",
+            source = "Built-in (fallback)",
             sections = listOf(
                 MetadataSection(
                     "General",
@@ -481,17 +572,42 @@ object MediaMetadataExtractor {
         )
     }
 
+    private fun runMediaInfoCommand(command: List<String>, timeoutSeconds: Long = 8): MediaInfoCommandResult {
+        val result = runProcess(command, timeoutSeconds) ?: return MediaInfoCommandResult.Failed(MediaInfoFailureReason.COMMAND_FAILED)
+        if (result.timedOut) return MediaInfoCommandResult.Failed(MediaInfoFailureReason.TIMEOUT)
+        if (result.exitCode != 0) return MediaInfoCommandResult.Failed(MediaInfoFailureReason.COMMAND_FAILED)
+        return result.output.takeIf { it.isNotBlank() }
+            ?.let { MediaInfoCommandResult.Success(it) }
+            ?: MediaInfoCommandResult.Failed(MediaInfoFailureReason.PARSE_EMPTY)
+    }
+
     private fun runCommand(command: List<String>, timeoutSeconds: Long = 8): String? {
+        val result = runProcess(command, timeoutSeconds) ?: return null
+        if (result.timedOut || result.exitCode != 0) return null
+        return result.output.takeIf { it.isNotBlank() }
+    }
+
+    private data class ProcessRunResult(
+        val exitCode: Int,
+        val output: String,
+        val timedOut: Boolean
+    )
+
+    private fun runProcess(command: List<String>, timeoutSeconds: Long): ProcessRunResult? {
         return try {
             val process = ProcessBuilder(command)
                 .redirectErrorStream(true)
                 .start()
+            val outputFuture = CompletableFuture.supplyAsync {
+                process.inputStream.bufferedReader().use { it.readText() }
+            }
             if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 process.destroyForcibly()
-                return null
+                val output = outputFuture.getNow("")
+                return ProcessRunResult(exitCode = -1, output = output, timedOut = true)
             }
-            if (process.exitValue() != 0) return null
-            process.inputStream.bufferedReader().readText().takeIf { it.isNotBlank() }
+            val output = runCatching { outputFuture.get(1, TimeUnit.SECONDS) }.getOrDefault("")
+            ProcessRunResult(process.exitValue(), output, timedOut = false)
         } catch (_: Throwable) {
             null
         }

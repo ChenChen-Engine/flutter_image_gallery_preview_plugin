@@ -77,9 +77,11 @@ Both plugins align on:
 - Windows MediaInfo CLI is attempted first with `cmd /c mediaInfo --output=json <file>`.
 - Some MediaInfo CLI builds return the default readable text report for that lowercase flag; hosts parse both JSON and text reports.
 - Windows direct executable fallback scans PATH plus common CLI install directories on all local drive letters, including `MediaInfo_Cli`.
+- Direct executable discovery is cached per plugin process; do not re-scan PATH or version-probe MediaInfo for every item.
 - Metadata extraction is bounded parallel work with a maximum of 6 concurrent items per host.
 - A single item is allowed to time out and fall back to lightweight metadata; indexing continues.
-- Timed-out fallback metadata is not treated as a permanent rich metadata cache. Clicking `i` retries extraction on demand.
+- Timeout, parse-empty, command-failed, and fallback states are represented in the metadata source label so both the loading overlay and `i` dialog explain why full MediaInfo rows are missing.
+- Timed-out or fallback metadata is not treated as a permanent rich metadata cache. Clicking `i` retries extraction on demand, and the dialog refresh button forces a fresh MediaInfo read.
 - Host parsers keep every primitive MediaInfo track field; they do not cap the modal rows at 80.
 - If MediaInfo CLI is unavailable or incomplete, hosts merge built-in/native metadata and `ffprobe`.
 - `requestMediaInfo` remains a defensive fallback only when indexed metadata is missing.
@@ -90,7 +92,8 @@ Both plugins align on:
 - `Refresh` forces full reindexing and metadata cache rebuild.
 - IntelliJ publishes `phase`, `indexedCount`, `metadataCount`, `currentPath`, optional `fallbackSource`, `elapsedMillis`, `workerStatus`, and `diagnostic`.
 - IntelliJ also shows a host-side loading fallback while JCEF is starting.
-- VSCode publishes worker `phase`, `count`, `total`, `currentPath`, `partialCount`, `elapsedMillis`, `lastHeartbeatMillis`, `workerStatus`, and `diagnostic`, and mirrors them to an OutputChannel.
+- VSCode publishes worker `phase`, `count`, `total`, `currentPath`, `partialCount`, `fallbackSource`, `elapsedMillis`, `lastHeartbeatMillis`, `workerStatus`, and `diagnostic`, and mirrors them to an OutputChannel.
+- The shared web UI receives VSCode `webview.postMessage` payloads through a `window.message` bridge to `galleryHostReceive`; partial `assets` messages must not hide loading.
 
 ## Duplicate handling
 

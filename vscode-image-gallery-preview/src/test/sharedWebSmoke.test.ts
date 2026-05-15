@@ -29,6 +29,16 @@ suite('shared web smoke', () => {
     assert.match(script, /post\('refresh',\s*\{\s*force:\s*true\s*\}\)/);
   });
 
+  test('shared web accepts VSCode host messages and exposes info refresh', () => {
+    const html = fs.readFileSync(sharedPath('index.html'), 'utf8');
+    const script = fs.readFileSync(sharedPath('gallery.js'), 'utf8');
+
+    assert.match(html, /id="infoRefreshButton"/);
+    assert.match(script, /window\.addEventListener\('message'/);
+    assert.match(script, /window\.galleryHostReceive\s*=\s*handleHostMessage/);
+    assert.match(script, /post\('requestMediaInfo',\s*\{\s*absPath:\s*item\.absPath,\s*force:\s*true\s*\}\)/);
+  });
+
   test('shared media preview keeps external playback without stale web player code', () => {
     const script = fs.readFileSync(sharedPath('gallery.js'), 'utf8');
 

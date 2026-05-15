@@ -38,6 +38,7 @@ suite('scan worker', () => {
     assert.ok(progress.some((message) => message.progress?.phase === 'discover' && message.progress?.count === 1 && message.progress?.currentPath === 'C:/demo/one'));
     assert.ok(progress.some((message) => message.progress?.phase === 'enrich' && message.progress?.count === 2 && /two\.mp4$/.test(message.progress?.currentPath ?? '')));
     assert.ok(progress.some((message) => message.progress?.heartbeat === true), 'expected at least one heartbeat progress message');
+    assert.ok(progress.some((message) => message.progress?.fallbackSource === 'Built-in'), 'expected fallback source diagnostics in progress');
 
     const done = messages.find((message) => message.type === 'done');
     assert.ok(done, 'expected done message');
@@ -124,7 +125,7 @@ suite('scan worker', () => {
     });
 
     assert.strictEqual(items.length, 1);
-    assert.match(items[0].mediaInfo?.source ?? '', /^Timed out fallback/);
+    assert.match(items[0].mediaInfo?.source ?? '', /^MediaInfo \(timeout/);
   });
 });
 

@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import * as path from 'path';
-import { findMediaInfoExecutable } from '../mediaInfoTool';
+import { createMediaInfoExecutableResolver, findMediaInfoExecutable } from '../mediaInfoTool';
 
 suite('media info tooling', () => {
   test('prefers MEDIAINFO_PATH when configured', () => {
@@ -62,5 +62,17 @@ suite('media info tooling', () => {
     );
 
     assert.strictEqual(found, null);
+  });
+
+  test('caches MediaInfo executable discovery per resolver session', () => {
+    let probes = 0;
+    const resolver = createMediaInfoExecutableResolver(() => {
+      probes += 1;
+      return 'D:\\Tools\\MediaInfo\\MediaInfo.exe';
+    });
+
+    assert.strictEqual(resolver(), 'D:\\Tools\\MediaInfo\\MediaInfo.exe');
+    assert.strictEqual(resolver(), 'D:\\Tools\\MediaInfo\\MediaInfo.exe');
+    assert.strictEqual(probes, 1);
   });
 });

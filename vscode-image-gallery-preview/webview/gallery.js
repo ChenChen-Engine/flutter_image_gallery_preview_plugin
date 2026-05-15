@@ -52,10 +52,12 @@
     loadingPhase: document.getElementById('loadingPhase'),
     loadingCounts: document.getElementById('loadingCounts'),
     loadingFallback: document.getElementById('loadingFallback'),
+    loadingCurrent: document.getElementById('loadingCurrent'),
     loadingPath: document.getElementById('loadingPath'),
     toast: document.getElementById('toast'),
     modal: document.getElementById('infoModal'),
     infoContent: document.getElementById('infoContent'),
+    infoRefresh: document.getElementById('infoRefreshButton'),
   };
 
   const contextMenu = document.createElement('div');
@@ -79,6 +81,7 @@
     groupCounts: new Map(),
     infoByPath: new Map(),
     currentInfoPath: null,
+    currentInfoItem: null,
     contextItem: null,
     animatedRegistry: new Map(),
     animationObserver: null,
@@ -156,6 +159,12 @@
     return slash >= 0 ? value.substring(slash + 1) : value;
   }
 
+  function pathTailOf(value) {
+    const text = String(value ?? '');
+    const slash = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
+    return slash >= 0 ? text.substring(slash + 1) : text;
+  }
+
   function normalizedGroupPath(groupPath) {
     return groupPath && groupPath !== '.' ? groupPath : '.';
   }
@@ -215,17 +224,24 @@
     const diagnostic = details.diagnostic ? `Diagnostic: ${details.diagnostic}` : '';
     const detailParts = [fallbackLabel, worker, heartbeat, elapsed, partial, diagnostic].filter(Boolean);
     const fallback = detailParts.join(' | ');
-    const currentPath = details.currentPath ? `Current: ${details.currentPath}` : '';
+    const currentTail = details.currentPath ? pathTailOf(details.currentPath) : '';
+    const currentPath = currentTail ? `Current: ${currentTail}` : '';
+    const fullPath = details.currentPath ? `Path: ${details.currentPath}` : '';
 
     elements.loadingPhase.textContent = phase;
     elements.loadingCounts.textContent = counts;
     elements.loadingFallback.textContent = fallback;
+    elements.loadingCurrent.textContent = currentPath;
     elements.loadingPath.textContent = currentPath;
+    if (fullPath) {
+      elements.loadingPath.textContent = fullPath;
+    }
 
     elements.loadingPhase.classList.toggle('hidden', !phase);
     elements.loadingCounts.classList.toggle('hidden', !counts);
     elements.loadingFallback.classList.toggle('hidden', !fallback);
-    elements.loadingPath.classList.toggle('hidden', !currentPath);
+    elements.loadingCurrent.classList.toggle('hidden', !currentPath);
+    elements.loadingPath.classList.toggle('hidden', !fullPath);
   }
 
   function showToast(message) {
@@ -1144,20 +1160,37 @@
     };
   }
 
+  function shouldRetryMediaInfo(info) {
+    const source = String(info?.source || '').toLowerCase();
+    return source.includes('timeout') ||
+      source.includes('parse-empty') ||
+      source.includes('command-failed') ||
+      source.includes('fallback');
+  }
+
   function showInfoModal(item) {
     state.currentInfoPath = item.absPath;
+    state.currentInfoItem = item;
     elements.modal.classList.remove('hidden');
 
     const cached = state.infoByPath.get(item.absPath) || item.mediaInfo || item.imageInfo || fallbackInfo(item);
     renderInfo(cached);
 
-    if (!state.infoByPath.has(item.absPath) || (!item.mediaInfo && !item.imageInfo)) {
+    if (!state.infoByPath.has(item.absPath) || shouldRetryMediaInfo(cached)) {
       post('requestMediaInfo', { absPath: item.absPath });
     }
   }
 
+  function refreshCurrentInfo() {
+    const item = state.currentInfoItem;
+    if (!item) return;
+    showToast('刷新媒体信息中...');
+    post('requestMediaInfo', { absPath: item.absPath, force: true });
+  }
+
   function closeInfoModal() {
     state.currentInfoPath = null;
+    state.currentInfoItem = null;
     elements.modal.classList.add('hidden');
   }
 
@@ -1340,6 +1373,13 @@
     post('refresh', { force: true });
   });
 
+  if (elements.infoRefresh) {
+    elements.infoRefresh.addEventListener('click', (event) => {
+      event.stopPropagation();
+      refreshCurrentInfo();
+    });
+  }
+
   elements.modal.addEventListener('click', (event) => {
     if (event.target.closest('[data-close-modal]')) {
       closeInfoModal();
@@ -1360,8 +1400,15 @@
   window.addEventListener('scroll', onScroll, { passive: true });
   window.addEventListener('resize', onScroll, { passive: true });
 
-  window.galleryHostReceive = (message) => {
-    const msg = typeof message === 'string' ? JSON.parse(message) : message;
+  function handleHostMessage(message) {
+    let msg = message;
+    if (typeof message === 'string') {
+      try {
+        msg = JSON.parse(message);
+      } catch {
+        return;
+      }
+    }
 
     if (msg?.type === 'loadingState') {
       setLoading(!!msg.loading, msg.message || 'Indexing assets...', msg);
@@ -1378,7 +1425,6 @@
           state.infoByPath.set(item.absPath, item.mediaInfo || item.imageInfo);
         }
       }
-      setLoading(false, '');
       updateFilterOptions();
       resetRender();
       return;
@@ -1395,7 +1441,10 @@
     if (msg?.type === 'toast' && msg.message) {
       showToast(msg.message);
     }
-  };
+  }
+
+  window.galleryHostReceive = handleHostMessage;
+  window.addEventListener('message', (event) => handleHostMessage(event.data));
 
   applyTileSize();
   setLoading(true, 'Indexing assets...');

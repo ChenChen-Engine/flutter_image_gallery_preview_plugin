@@ -42,8 +42,10 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
   - eager metadata indexing before items are shown
   - Windows MediaInfo CLI probe via `cmd /c mediaInfo --output=json <file>`
   - MediaInfo text-output parsing when that CLI flag returns the default readable report instead of JSON
+  - MediaInfo executable discovery is cached for the plugin session, so PATH and version probes do not repeat per file
   - bounded parallel metadata enrichment for faster MediaInfo / ffprobe extraction
   - per-file metadata timeout fallback so one problematic resource cannot block indexing
+  - explicit metadata failure labels (`timeout`, `parse-empty`, `command-failed`, `fallback`) in loading diagnostics and the `i` dialog source line
   - full primitive MediaInfo track fields are retained for the `i` dialog
   - built-in image metadata extraction
   - native / built-in image and media metadata merge
@@ -60,7 +62,8 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
 - IntelliJ resolves indexed metadata before publishing assets and reports structured loading phases for discovery vs metadata enrichment.
 - IntelliJ shows a host-side loading fallback while JCEF is starting so the tool window is never blank.
 - VSCode uses incremental worker-based scanning, partial publishes, and loading diagnostics with phase/count/path, elapsed/heartbeat details, worker status, and OutputChannel diagnostics for long scans.
-- If an item times out during indexing, the gallery shows lightweight fallback metadata and clicking `i` retries extraction on demand.
+- The shared webview accepts VSCode `postMessage` events and JCEF direct calls through the same host-message path; loading is controlled by `loadingState`, not by partial asset publishes.
+- If an item times out or falls back during indexing, the gallery shows lightweight fallback metadata, clicking `i` retries extraction on demand, and the metadata dialog refresh button forces a fresh MediaInfo read.
 - MediaInfo GUI is intentionally ignored. Only MediaInfo CLI is considered valid metadata tooling.
 - Full implementation details and iteration history are recorded in `IMPLEMENTATION_HANDOFF.md`.
 

@@ -9,6 +9,7 @@ export interface ScanWorkerProgress {
   currentPath: string | null;
   diagnostic?: string;
   elapsedMillis?: number;
+  fallbackSource?: string;
   heartbeat: boolean;
   lastHeartbeatMillis?: number;
   message: string;
@@ -75,11 +76,12 @@ export async function runScanWorker({
     heartbeat: boolean,
     partialCount = enrichedItems.filter(Boolean).length,
     workerStatus = heartbeat ? 'heartbeat' : 'active',
-    diagnostic?: string
+    diagnostic?: string,
+    fallbackSource?: string
   ) => {
     const now = Date.now();
     if (!heartbeat) lastProgressAt = now;
-    latestProgress = createProgress(phase, count, total, currentPath, heartbeat, startedAt, lastProgressAt, partialCount, workerStatus, diagnostic);
+    latestProgress = createProgress(phase, count, total, currentPath, heartbeat, startedAt, lastProgressAt, partialCount, workerStatus, diagnostic, fallbackSource);
     postMessage({
       type: 'progress',
       progress: latestProgress,
@@ -102,7 +104,8 @@ export async function runScanWorker({
           lastProgressAt,
           enrichedItems.filter(Boolean).length,
           'heartbeat',
-          'worker heartbeat active'
+          'worker heartbeat active',
+          latestProgress.fallbackSource
         ),
         total: latestProgress.phase === 'discover' ? discoveredItems.length : latestProgress.total
       });
@@ -148,7 +151,18 @@ export async function runScanWorker({
           ? item
           : await withMetadataTimeout(enrichItem(item), item, metadataTimeoutMs);
         completed += 1;
-        emitProgress('enrich', completed, totalItems, currentPath, false, completed, `active ${Math.max(0, Math.min(parallelism, totalItems - completed))}/${parallelism}`);
+        const enrichedItem = enrichedItems[index];
+        emitProgress(
+          'enrich',
+          completed,
+          totalItems,
+          currentPath,
+          false,
+          completed,
+          `active ${Math.max(0, Math.min(parallelism, totalItems - completed))}/${parallelism}`,
+          diagnosticFor(enrichedItem),
+          fallbackSourceFor(enrichedItem)
+        );
         publishAssets(false);
       }
     };
@@ -175,7 +189,8 @@ function createProgress(
   lastProgressAt: number,
   partialCount: number,
   workerStatus: string,
-  diagnostic?: string
+  diagnostic?: string,
+  fallbackSource?: string
 ): ScanWorkerProgress {
   const target = currentPath ? normalizePath(currentPath) : null;
   const currentName = target ? target.split('/').pop() || target : 'workspace';
@@ -189,6 +204,7 @@ function createProgress(
     count,
     diagnostic,
     elapsedMillis: Date.now() - startedAt,
+    fallbackSource,
     total,
     currentPath: target,
     heartbeat,
@@ -197,6 +213,31 @@ function createProgress(
     workerStatus,
     message: heartbeat ? `${activity} heartbeat: ${currentName}` : `${activity}: ${currentName}`
   };
+}
+
+function fallbackSourceFor(item: GalleryAssetItem | undefined): string | undefined {
+  const source = item?.mediaInfo?.source;
+  if (!source) return undefined;
+  if (failureReasonForSource(source) || !source.toLowerCase().includes('mediainfo')) return source;
+  return undefined;
+}
+
+function diagnosticFor(item: GalleryAssetItem | undefined): string | undefined {
+  const source = item?.mediaInfo?.source;
+  if (!source) return undefined;
+  const reason = failureReasonForSource(source);
+  if (reason) return `MediaInfo ${reason}; click i or Refresh Info to retry.`;
+  if (!source.toLowerCase().includes('mediainfo')) return `MediaInfo unavailable; used ${source}`;
+  return undefined;
+}
+
+function failureReasonForSource(source: string): string | null {
+  const normalized = source.toLowerCase();
+  if (normalized.includes('timeout')) return 'timeout';
+  if (normalized.includes('parse-empty')) return 'parse-empty';
+  if (normalized.includes('command-failed')) return 'command-failed';
+  if (normalized.includes('fallback')) return 'fallback';
+  return null;
 }
 
 function normalizeMetadataCacheKeys(value: RunScanWorkerArgs['metadataCacheKeys']): Set<string> {
@@ -234,7 +275,8 @@ function withMetadataTimeout(
 
 function timeoutFallbackItem(item: GalleryAssetItem, reason: string): GalleryAssetItem {
   const fileSize = readableFileSize(item.absPath);
-  const source = `Timed out fallback (${reason}; click i to retry)`;
+  const reasonLabel = reason.toLowerCase().includes('timed out') ? 'timeout' : 'fallback';
+  const source = `MediaInfo (${reasonLabel}: ${reason}; click i to retry)`;
   if (item.mediaType === 'image') {
     const imageInfo = {
       width: item.width != null ? String(item.width) : 'Unknown',

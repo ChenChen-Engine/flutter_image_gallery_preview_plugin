@@ -15,6 +15,7 @@ export interface LoadingStateMessage {
   currentPath?: string | null;
   diagnostic?: string;
   elapsedMillis?: number;
+  fallbackSource?: string;
   heartbeat?: boolean;
   lastHeartbeatMillis?: number;
   loading: boolean;
@@ -229,12 +230,19 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     }
 
     if ((message?.type === 'requestImageInfo' || message?.type === 'requestMediaInfo') && typeof message.absPath === 'string') {
-      const info = await this.loadMediaInfo(message.absPath);
+      const force = message.force === true;
+      const info = await this.loadMediaInfo(message.absPath, force);
       await this.view?.webview.postMessage({
         type: 'imageInfo',
         absPath: normalizePath(message.absPath),
         info
       });
+      if (force) {
+        await this.view?.webview.postMessage({
+          type: 'toast',
+          message: '媒体信息已刷新'
+        });
+      }
       return;
     }
 
@@ -340,7 +348,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       const lottieJson = item.formatFamily === 'lottie' ? readSmallTextFile(normalizedAbsPath) : null;
       return {
         ...toWebviewAssetItem(item, previewUri, lottieJson),
-        mediaInfo: item.mediaInfo ?? this.infoCache.get(normalizedAbsPath)
+        mediaInfo: this.infoCache.get(normalizedAbsPath) ?? item.mediaInfo
       };
     });
 
@@ -458,13 +466,13 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async loadMediaInfo(absPath: string): Promise<MediaMetadataInfo> {
+  private async loadMediaInfo(absPath: string, force = false): Promise<MediaMetadataInfo> {
     const normalized = normalizePath(absPath);
     const cached = this.infoCache.get(normalized);
-    if (cached && !isTimeoutFallbackInfo(cached)) return cached;
+    if (!force && cached && !isRetryableMediaInfo(cached)) return cached;
 
     const item = this.cachedItems.find((entry) => normalizePath(entry.absPath) === normalized);
-    if (item?.mediaInfo && !isTimeoutFallbackInfo(item.mediaInfo)) {
+    if (!force && item?.mediaInfo && !isRetryableMediaInfo(item.mediaInfo)) {
       this.infoCache.set(normalized, item.mediaInfo);
       return item.mediaInfo;
     }
@@ -522,7 +530,7 @@ function metadataByKey(items: GalleryAssetItem[]): Map<string, CachedMetadata> {
   const cache = new Map<string, CachedMetadata>();
   for (const item of items) {
     if (!item.mediaInfo && !item.imageInfo) continue;
-    if (isTimeoutFallbackInfo(item.mediaInfo)) continue;
+    if (isRetryableMediaInfo(item.mediaInfo)) continue;
     cache.set(metadataCacheKey(item), {
       durationMillis: item.durationMillis,
       imageInfo: item.imageInfo,
@@ -536,8 +544,13 @@ function metadataCacheKey(item: GalleryAssetItem): string {
   return `${normalizePath(item.absPath)}|${item.mtime}|${item.mediaType}`;
 }
 
-function isTimeoutFallbackInfo(info: MediaMetadataInfo | null | undefined): boolean {
-  return typeof info?.source === 'string' && info.source.toLowerCase().startsWith('timed out fallback');
+function isRetryableMediaInfo(info: MediaMetadataInfo | null | undefined): boolean {
+  const source = String(info?.source ?? '').toLowerCase();
+  return source.startsWith('timed out fallback') ||
+    source.includes('timeout') ||
+    source.includes('parse-empty') ||
+    source.includes('command-failed') ||
+    source.includes('fallback');
 }
 
 export function toLoadingStateMessage(progress: ScanWorkerProgress): LoadingStateMessage {
@@ -552,6 +565,7 @@ export function toLoadingStateMessage(progress: ScanWorkerProgress): LoadingStat
     currentPath: progress.currentPath,
     diagnostic: progress.diagnostic,
     elapsedMillis: progress.elapsedMillis,
+    fallbackSource: progress.fallbackSource,
     heartbeat: progress.heartbeat,
     lastHeartbeatMillis: progress.lastHeartbeatMillis,
     partialCount: progress.partialCount,
@@ -566,7 +580,8 @@ export function formatWorkerDiagnostic(progress: ScanWorkerProgress): string {
   const partial = typeof progress.partialCount === 'number' ? ` partial=${progress.partialCount}` : '';
   const status = progress.workerStatus ? ` status=${progress.workerStatus}` : '';
   const diagnostic = progress.diagnostic ? ` diagnostic=${progress.diagnostic}` : '';
-  return `[worker:${marker}] ${progress.phase} ${progress.count}/${progress.total}${partial}${elapsed}${status}${diagnostic}${suffix}`;
+  const fallback = progress.fallbackSource ? ` fallback=${progress.fallbackSource}` : '';
+  return `[worker:${marker}] ${progress.phase} ${progress.count}/${progress.total}${partial}${elapsed}${status}${fallback}${diagnostic}${suffix}`;
 }
 
 function isInterestingFsPath(fsPath: string): boolean {

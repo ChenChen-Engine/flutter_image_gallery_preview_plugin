@@ -158,6 +158,9 @@ The shared web layer does not guess platform copy rules. Host code sends the fin
 - MediaInfo JSON keeps all primitive track fields; row truncation is intentionally avoided so the `i` dialog can show complete CLI output.
 - MediaInfo text reports are also parsed because `mediaInfo --output=json <file>` can return the default readable report on MediaInfo CLI v26.05.
 - Windows direct executable fallback checks PATH and common CLI install directories across all drive letters, including `MediaInfo_Cli`.
+- MediaInfo executable discovery is session-cached in both hosts. The scanner still runs MediaInfo per item, but PATH scanning and version probes happen once per plugin process.
+- MediaInfo command failures are surfaced as explicit source labels: `timeout`, `parse-empty`, `command-failed`, or `fallback`.
+- IntelliJ drains process stdout while waiting for MediaInfo / ffprobe, avoiding false timeouts caused by a full output pipe.
 - Indexed items are enriched before the gallery payload is published, so `durationMillis`, `durationLabel`, and `mediaInfo` are ready when `i` is clicked.
 - MediaInfo GUI is intentionally rejected.
 - MediaInfo detection now requires CLI-style execution, not just an `.exe` with a matching name.
@@ -198,6 +201,7 @@ Relevant files:
 - Duration is rendered as a bottom-centered overlay inside the thumbnail border with a 4px bottom offset.
 - Single-click copy and double-click reveal stay unchanged.
 - Indexed metadata is shown immediately from the cached payload; `requestMediaInfo` remains only as a defensive fallback path.
+- The metadata dialog has a refresh button next to close. It sends `requestMediaInfo` with `force: true`, bypasses host metadata cache, and toasts after the new info is returned.
 
 ## Sync, Refresh, and diagnostics
 
@@ -207,6 +211,8 @@ Relevant files:
 - Loading payloads can include `phase`, item counts, metadata counts, current path, fallback source, elapsed time, worker status, partial count, and diagnostic text.
 - If a metadata item times out, both hosts publish a diagnostic and keep scanning instead of waiting indefinitely.
 - VSCode mirrors worker diagnostics into the `Image Gallery Preview` OutputChannel; if loading gets stuck, collect both overlay text and OutputChannel lines beginning with `[sync]`, `[refresh]`, or `[worker:...]`.
+- VSCode webview messages now enter the shared UI through a `window.message` bridge to `galleryHostReceive`; this is required for host-sent `assets` and `loadingState` payloads to be observed.
+- Partial `assets` payloads no longer hide the loading overlay; the overlay hides only when `loadingState.loading` becomes false.
 
 ### Tradeoff
 
@@ -252,6 +258,12 @@ The implementation evolved in these stages:
    - per-file metadata timeout fallback in IntelliJ and VSCode
    - click-`i` forced metadata retry when indexed metadata is a timeout fallback
    - VSCode worker passes cache keys instead of full metadata payloads to reduce worker IPC pressure
+9. VSCode loading / MediaInfo performance pass:
+   - webview `postMessage` bridge into `galleryHostReceive`
+   - metadata dialog force-refresh button
+   - session-cached MediaInfo executable discovery
+   - explicit timeout / parse-empty / command-failed / fallback diagnostics
+   - VSCode activity icon aligned with IntelliJ's generic image glyph
 
 ## Data model contract
 

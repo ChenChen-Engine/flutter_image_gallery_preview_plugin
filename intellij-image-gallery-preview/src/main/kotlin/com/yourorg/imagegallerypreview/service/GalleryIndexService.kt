@@ -311,10 +311,12 @@ class GalleryIndexService(private val project: Project) : Disposable {
         processed: Int,
         startedMillis: Long
     ) {
-        val fallbackSource = item.mediaInfo?.source
-            ?.takeUnless { it.contains("MediaInfo", ignoreCase = true) }
+        val failureReason = MediaMetadataExtractor.failureReason(item.mediaInfo)
+        val fallbackSource = item.mediaInfo?.source?.takeIf { source ->
+            failureReason != null || !source.contains("MediaInfo", ignoreCase = true)
+        }
         val diagnostic = when {
-            MediaMetadataExtractor.isTimeoutFallback(item.mediaInfo) -> "Metadata timed out; click i to retry on demand."
+            failureReason != null -> "MediaInfo $failureReason; click i or Refresh Info to retry."
             fallbackSource != null -> "MediaInfo unavailable; used $fallbackSource"
             else -> null
         }

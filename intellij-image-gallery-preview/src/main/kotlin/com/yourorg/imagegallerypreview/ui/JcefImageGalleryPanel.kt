@@ -136,7 +136,9 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             "showInSystem" -> message.string("absPath")?.let { absPath ->
                 ApplicationManager.getApplication().invokeLater { RevealFileAction.openFile(File(absPath)) }
             }
-            "requestImageInfo", "requestMediaInfo" -> message.string("absPath")?.let(::sendMediaInfo)
+            "requestImageInfo", "requestMediaInfo" -> message.string("absPath")?.let { absPath ->
+                sendMediaInfo(absPath, message.get("force")?.asBoolean == true)
+            }
             "openWithDefaultApp" -> message.string("absPath")?.let { absPath ->
                 ApplicationManager.getApplication().executeOnPooledThread { openWithDefaultApp(absPath) }
             }
@@ -198,13 +200,13 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         }
     }
 
-    private fun sendMediaInfo(absPath: String) {
+    private fun sendMediaInfo(absPath: String, force: Boolean = false) {
         val normalized = AssetFileUtil.normalizePath(absPath)
         val item = latestItems.firstOrNull { AssetFileUtil.normalizePath(it.absPath) == normalized }
             ?: return
 
         ApplicationManager.getApplication().executeOnPooledThread {
-            val info = if (MediaMetadataExtractor.isTimeoutFallback(item.mediaInfo)) {
+            val info = if (force || MediaMetadataExtractor.isRetryableFallback(item.mediaInfo)) {
                 MediaMetadataExtractor.infoFor(item, force = true)
             } else {
                 item.mediaInfo ?: MediaMetadataExtractor.infoFor(item)
@@ -216,6 +218,9 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
                     "info" to info
                 )
             )
+            if (force) {
+                sendToWeb(mapOf("type" to "toast", "message" to "媒体信息已刷新"))
+            }
         }
     }
 
