@@ -55,6 +55,9 @@ internal class LocalMediaStreamServer(private val logger: Logger) : Disposable {
     private fun handle(exchange: HttpExchange) {
         try {
             exchange.responseHeaders.add("Access-Control-Allow-Origin", "*")
+            exchange.responseHeaders.add("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+            exchange.responseHeaders.add("Access-Control-Allow-Headers", "Range, Content-Type")
+            exchange.responseHeaders.add("Access-Control-Expose-Headers", "Accept-Ranges, Content-Length, Content-Range")
             exchange.responseHeaders.add("Accept-Ranges", "bytes")
 
             if (exchange.requestMethod.equals("OPTIONS", ignoreCase = true)) {
@@ -173,6 +176,10 @@ internal class LocalMediaStreamServer(private val logger: Logger) : Disposable {
             "mkv" -> "video/x-matroska"
             "avi" -> "video/x-msvideo"
             "3gp", "3gpp" -> "video/3gpp"
+            "mpeg", "mpg" -> "video/mpeg"
+            "ts", "m2ts" -> "video/mp2t"
+            "wmv" -> "video/x-ms-wmv"
+            "flv" -> "video/x-flv"
             "mp3" -> "audio/mpeg"
             "m4a", "aac" -> "audio/aac"
             "wav" -> "audio/wav"
@@ -181,6 +188,10 @@ internal class LocalMediaStreamServer(private val logger: Logger) : Disposable {
             "amr" -> "audio/amr"
             "mid", "midi" -> "audio/midi"
             "caf" -> "audio/x-caf"
+            "wma" -> "audio/x-ms-wma"
+            "aiff", "aif" -> "audio/aiff"
+            "alac" -> "audio/alac"
+            "mka" -> "audio/x-matroska"
             else -> "application/octet-stream"
         }
     }

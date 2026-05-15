@@ -130,6 +130,15 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
                 ApplicationManager.getApplication().invokeLater { RevealFileAction.openFile(File(absPath)) }
             }
             "requestImageInfo", "requestMediaInfo" -> message.string("absPath")?.let(::sendMediaInfo)
+            "playNativeMedia" -> {
+                val absPath = message.string("absPath")
+                val mediaType = message.string("mediaType").orEmpty()
+                if (!absPath.isNullOrBlank()) {
+                    ApplicationManager.getApplication().invokeLater {
+                        NativeMediaPlayerDialog.open(project, absPath, mediaType)
+                    }
+                }
+            }
             "openWithDefaultApp" -> message.string("absPath")?.let { absPath ->
                 ApplicationManager.getApplication().executeOnPooledThread { openWithDefaultApp(absPath) }
             }

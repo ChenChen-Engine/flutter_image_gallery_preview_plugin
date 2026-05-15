@@ -199,6 +199,54 @@
     return value || 'Unknown';
   }
 
+  function mediaMime(item, mediaType) {
+    const format = String(item?.formatFamily || item?.format || '').toLowerCase();
+    const types = {
+      video: {
+        mp4: 'video/mp4',
+        m4v: 'video/mp4',
+        mov: 'video/quicktime',
+        webm: 'video/webm',
+        mkv: 'video/x-matroska',
+        avi: 'video/x-msvideo',
+        '3gp': 'video/3gpp',
+        '3gpp': 'video/3gpp',
+        mpeg: 'video/mpeg',
+        mpg: 'video/mpeg',
+        ts: 'video/mp2t',
+        m2ts: 'video/mp2t',
+        wmv: 'video/x-ms-wmv',
+        flv: 'video/x-flv'
+      },
+      audio: {
+        mp3: 'audio/mpeg',
+        m4a: 'audio/mp4',
+        aac: 'audio/aac',
+        wav: 'audio/wav',
+        ogg: 'audio/ogg',
+        opus: 'audio/ogg',
+        flac: 'audio/flac',
+        amr: 'audio/amr',
+        mid: 'audio/midi',
+        midi: 'audio/midi',
+        caf: 'audio/x-caf',
+        wma: 'audio/x-ms-wma',
+        aiff: 'audio/aiff',
+        aif: 'audio/aiff',
+        alac: 'audio/mp4',
+        mka: 'audio/x-matroska'
+      }
+    };
+    return types[mediaType]?.[format] || '';
+  }
+
+  function canPlayMedia(item, mediaType) {
+    const probe = mediaType === 'video' ? document.createElement('video') : document.createElement('audio');
+    const mime = mediaMime(item, mediaType);
+    if (!mime || typeof probe.canPlayType !== 'function') return true;
+    return probe.canPlayType(mime) !== '';
+  }
+
   function setLoading(loading, message = 'Indexing assets...') {
     state.loading = !!loading;
     elements.refresh.disabled = state.loading;
@@ -760,7 +808,15 @@
     play.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (item.hostPlayback) {
+        post('playNativeMedia', { absPath: item.absPath, mediaType: 'audio' });
+        return;
+      }
       if (!item.previewSrc) {
+        showUnsupportedMedia(item, 'audio');
+        return;
+      }
+      if (!canPlayMedia(item, 'audio')) {
         showUnsupportedMedia(item, 'audio');
         return;
       }
@@ -833,6 +889,10 @@
     play.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (item.hostPlayback) {
+        post('playNativeMedia', { absPath: item.absPath, mediaType: 'video' });
+        return;
+      }
       openVideoDialog(item);
     });
     const duration = durationBadge(item);
@@ -947,6 +1007,10 @@
 
   function openVideoDialog(item) {
     if (!item.previewSrc) {
+      showUnsupportedMedia(item, 'video');
+      return;
+    }
+    if (!canPlayMedia(item, 'video')) {
       showUnsupportedMedia(item, 'video');
       return;
     }
@@ -1418,11 +1482,11 @@
       const hint = document.createElement('div');
       hint.className = 'info-install-hint';
       const text = document.createElement('span');
-      text.textContent = normalized.installHint.text || '安装 MediaInfo 可解析更多数据';
+      text.textContent = normalized.installHint.text || '安装 MediaInfo CLI 可解析更多数据';
       const link = document.createElement('button');
       link.type = 'button';
       link.className = 'info-link';
-      link.textContent = normalized.installHint.actionLabel || '去下载';
+      link.textContent = normalized.installHint.actionLabel || '下载 CLI';
       link.addEventListener('click', () => post('openExternal', { url: normalized.installHint.url }));
       hint.appendChild(text);
       hint.appendChild(link);

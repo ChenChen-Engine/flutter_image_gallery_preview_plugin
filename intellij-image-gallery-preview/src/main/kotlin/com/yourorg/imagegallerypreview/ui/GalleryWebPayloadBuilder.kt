@@ -36,6 +36,7 @@ internal data class GalleryWebAssetItem(
     val fileName: String,
     val previewSrc: String?,
     val renderKind: String,
+    val hostPlayback: Boolean = false,
     val lottieJson: String? = null,
     val imageInfo: ImageMetadataInfo? = null,
     val mediaInfo: MediaMetadataInfo? = null
@@ -96,6 +97,7 @@ internal object GalleryWebPayloadBuilder {
             fileName = item.fileName,
             previewSrc = previewSrc,
             renderKind = renderKind,
+            hostPlayback = item.mediaType == "audio" || item.mediaType == "video",
             lottieJson = lottieJson,
             imageInfo = item.imageInfo,
             mediaInfo = null

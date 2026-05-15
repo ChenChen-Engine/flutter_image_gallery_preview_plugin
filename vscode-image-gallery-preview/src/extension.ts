@@ -19,16 +19,36 @@ import { findMediaInfoExecutable } from './mediaInfoTool';
 import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
 const execFileAsync = promisify(execFile);
-const MEDIAINFO_DOWNLOAD_URL = 'https://mediaarea.net/en/MediaInfo/Download';
+const MEDIAINFO_DOWNLOAD_URL = 'https://mediaarea.net/en/MediaInfo/Download/Windows';
 const SCAN_TIMEOUT_MS = 120_000;
+const SCAN_STALE_MS = 12_000;
 
-function scanWorkspaceInWorker(roots: string[]): Promise<GalleryAssetItem[]> {
+interface ScanWorkerMessage {
+  type?: 'progress' | 'assets' | 'done' | 'error';
+  items?: GalleryAssetItem[];
+  total?: number;
+  message?: string;
+  error?: string;
+}
+
+function scanWorkspaceInWorker(
+  roots: string[],
+  onProgress: (message: string) => void,
+  onPartial: (items: GalleryAssetItem[], done: boolean) => void
+): Promise<GalleryAssetItem[]> {
   if (!roots.length) return Promise.resolve([]);
 
   const workerPath = path.join(__dirname, 'scanWorker.js');
   return new Promise((resolve, reject) => {
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
+    let staleTimer: NodeJS.Timeout | undefined;
+    const resetStaleTimer = () => {
+      if (staleTimer) clearTimeout(staleTimer);
+      staleTimer = setTimeout(() => {
+        onProgress('Indexing is taking longer than expected; scanned results will appear incrementally.');
+      }, SCAN_STALE_MS);
+    };
     const worker = new Worker(workerPath, {
       workerData: { roots }
     });
@@ -36,22 +56,36 @@ function scanWorkspaceInWorker(roots: string[]): Promise<GalleryAssetItem[]> {
       if (settled) return;
       settled = true;
       if (timeout) clearTimeout(timeout);
+      if (staleTimer) clearTimeout(staleTimer);
       complete();
     };
     timeout = setTimeout(() => {
       finish(() => reject(new Error(`Indexing timed out after ${SCAN_TIMEOUT_MS / 1000}s`)));
       void worker.terminate();
     }, SCAN_TIMEOUT_MS);
+    resetStaleTimer();
 
-    worker.on('message', (message: { items?: GalleryAssetItem[]; error?: string }) => {
-      finish(() => {
-        if (message?.error) {
-          reject(new Error(message.error));
-        } else {
-          resolve(Array.isArray(message?.items) ? message.items : []);
-        }
-      });
-      void worker.terminate();
+    worker.on('message', (message: ScanWorkerMessage) => {
+      resetStaleTimer();
+      if (message?.type === 'progress') {
+        onProgress(message.message || 'Indexing assets...');
+        return;
+      }
+      if (message?.type === 'assets') {
+        onPartial(Array.isArray(message.items) ? message.items : [], false);
+        return;
+      }
+      if (message?.type === 'done') {
+        const items = Array.isArray(message.items) ? message.items : [];
+        onPartial(items, true);
+        finish(() => resolve(items));
+        void worker.terminate();
+        return;
+      }
+      if (message?.type === 'error' || message?.error) {
+        finish(() => reject(new Error(message.error || 'Index worker failed')));
+        void worker.terminate();
+      }
     });
 
     worker.on('error', (error) => {
@@ -213,13 +247,32 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       }
 
       const roots = vscode.workspace.workspaceFolders.map((folder) => folder.uri.fsPath);
-      const scannedItems = await scanWorkspaceInWorker(roots);
-      const items = scannedItems.map((item) => ({
-          ...item,
-          absPath: normalizePath(item.absPath),
-          relPath: normalizePath(item.relPath),
-          resourceRootPath: normalizePath(item.resourceRootPath)
-        }));
+      const normalizeItems = (rawItems: GalleryAssetItem[]) => rawItems.map((item) => ({
+        ...item,
+        absPath: normalizePath(item.absPath),
+        relPath: normalizePath(item.relPath),
+        resourceRootPath: normalizePath(item.resourceRootPath)
+      }));
+      const publishPartial = async (rawItems: GalleryAssetItem[], done: boolean) => {
+        const partialItems = normalizeItems(rawItems);
+        this.cachedItems = partialItems;
+        this.duplicateIndex = this.buildDuplicateIndex(partialItems);
+        await this.postAssets();
+        if (!done) {
+          await this.postLoadingState(false, `Indexed ${partialItems.length} assets so far...`);
+        }
+      };
+      const scannedItems = await scanWorkspaceInWorker(
+        roots,
+        (message) => {
+          const stale = message.includes('taking longer');
+          void this.postLoadingState(!stale, message);
+        },
+        (partialItems, done) => {
+          void publishPartial(partialItems, done);
+        }
+      );
+      const items = normalizeItems(scannedItems);
 
       this.cachedItems = items;
       this.duplicateIndex = this.buildDuplicateIndex(items);
@@ -440,8 +493,8 @@ function metadataRow(label: string, value: unknown): MetadataRow {
 
 function installHint() {
   return {
-    text: '安装 MediaInfo 可解析更多数据',
-    actionLabel: '去下载',
+    text: '安装 MediaInfo CLI 可解析更多数据',
+    actionLabel: '下载 CLI',
     url: MEDIAINFO_DOWNLOAD_URL
   };
 }
@@ -657,8 +710,8 @@ async function extractImageInfo(absPath: string): Promise<ImageInfo> {
 
 function mediaTypeFromPath(absPath: string): MediaType {
   const extension = path.extname(absPath).replace('.', '').toLowerCase();
-  if (['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'amr', 'mid', 'midi', 'caf'].includes(extension)) return 'audio';
-  if (['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', '3gp', '3gpp'].includes(extension)) return 'video';
+  if (['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'amr', 'mid', 'midi', 'caf', 'wma', 'aiff', 'aif', 'alac', 'mka'].includes(extension)) return 'audio';
+  if (['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', '3gp', '3gpp', 'mpeg', 'mpg', 'ts', 'm2ts', 'wmv', 'flv'].includes(extension)) return 'video';
   return 'image';
 }
 
@@ -696,7 +749,7 @@ function isInterestingFsPath(fsPath: string): boolean {
   const normalized = normalizePath(fsPath).toLowerCase();
   if (hasIgnoredSegment(normalized)) return false;
   if (normalized.endsWith('/pubspec.yaml')) return true;
-  const mediaLike = /\.(png|jpe?g|webp|gif|bmp|svg|pdf|heic|heif|apng|avif|ico|json|xml|mp3|m4a|aac|wav|ogg|opus|flac|amr|mid|midi|caf|mp4|m4v|mov|webm|mkv|avi|3gp|3gpp)$/i.test(normalized);
+  const mediaLike = /\.(png|jpe?g|webp|gif|bmp|svg|pdf|heic|heif|apng|avif|ico|json|xml|mp3|m4a|aac|wav|ogg|opus|flac|amr|mid|midi|caf|wma|aiff?|alac|mka|mp4|m4v|mov|webm|mkv|avi|3gp|3gpp|mpe?g|ts|m2ts|wmv|flv)$/i.test(normalized);
   if (!mediaLike) return false;
   return normalized.includes('/assets/') ||
     normalized.includes('/res/') ||

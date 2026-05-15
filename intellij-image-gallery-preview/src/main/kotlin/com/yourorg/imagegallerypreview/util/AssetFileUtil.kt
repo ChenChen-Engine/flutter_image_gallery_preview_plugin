@@ -13,8 +13,14 @@ object AssetFileUtil {
     private val imageFamilies = setOf("png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "pdf",
         "heic", "heif", "apng", "avif", "ico"
     )
-    private val audioFamilies = setOf("mp3", "m4a", "aac", "wav", "ogg", "opus", "flac", "amr", "mid", "midi", "caf")
-    private val videoFamilies = setOf("mp4", "m4v", "mov", "webm", "mkv", "avi", "3gp", "3gpp")
+    private val audioFamilies = setOf(
+        "mp3", "m4a", "aac", "wav", "ogg", "opus", "flac", "amr", "mid", "midi", "caf",
+        "wma", "aiff", "aif", "alac", "mka"
+    )
+    private val videoFamilies = setOf(
+        "mp4", "m4v", "mov", "webm", "mkv", "avi", "3gp", "3gpp",
+        "mpeg", "mpg", "ts", "m2ts", "wmv", "flv"
+    )
     private val directFamilies = imageFamilies + audioFamilies + videoFamilies
 
     fun normalizePath(path: String): String = path.replace('\\', '/')

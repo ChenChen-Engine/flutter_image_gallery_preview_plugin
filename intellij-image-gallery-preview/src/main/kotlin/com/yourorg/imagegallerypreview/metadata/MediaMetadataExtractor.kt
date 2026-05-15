@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 object MediaMetadataExtractor {
-    private const val MEDIAINFO_DOWNLOAD_URL = "https://mediaarea.net/en/MediaInfo/Download"
+    private const val MEDIAINFO_DOWNLOAD_URL = "https://mediaarea.net/en/MediaInfo/Download/Windows"
     private val cache = ConcurrentHashMap<String, MediaMetadataInfo>()
 
     fun infoFor(item: GalleryAssetItem): MediaMetadataInfo {
@@ -162,19 +162,19 @@ object MediaMetadataExtractor {
                 )
             ),
             installHint = InstallHint(
-                text = "安装 MediaInfo 可解析更多数据",
-                actionLabel = "去下载",
+                text = "安装 MediaInfo CLI 可解析更多数据",
+                actionLabel = "下载 CLI",
                 url = MEDIAINFO_DOWNLOAD_URL
             )
         )
     }
 
-    private fun runCommand(command: List<String>): String? {
+    private fun runCommand(command: List<String>, timeoutSeconds: Long = 8): String? {
         return try {
             val process = ProcessBuilder(command)
                 .redirectErrorStream(true)
                 .start()
-            if (!process.waitFor(8, TimeUnit.SECONDS)) {
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 process.destroyForcibly()
                 return null
             }
@@ -189,42 +189,99 @@ object MediaMetadataExtractor {
         env: Map<String, String> = System.getenv(),
         pathExists: (String) -> Boolean = { candidate -> File(candidate).exists() },
         pathExecutable: (String) -> Boolean = { candidate -> File(candidate).canExecute() },
-        osName: String = System.getProperty("os.name").orEmpty()
+        osName: String = System.getProperty("os.name").orEmpty(),
+        commandRunner: (List<String>) -> String? = { command -> runCommand(command, timeoutSeconds = 2) },
+        isConsoleExecutable: (String) -> Boolean = { candidate -> isWindowsConsoleExecutable(candidate) }
     ): String? {
-        env["MEDIAINFO_PATH"]
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?.let { configured ->
-                if (pathExists(configured)) return configured
+        val isWindows = osName.lowercase(Locale.ROOT).contains("win")
+
+        listOf("MEDIAINFO_CLI_PATH", "MEDIAINFO_PATH").forEach { key ->
+            env[key]
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { configured ->
+                    if (isMediaInfoCli(configured, isWindows, pathExists, isConsoleExecutable, commandRunner)) return configured
+                }
+        }
+
+        fun checkCandidate(candidate: String): String? {
+            return candidate.takeIf {
+                pathExists(it) &&
+                    (!isWindows || pathExecutable(it) || it.endsWith(".exe", ignoreCase = true)) &&
+                    isMediaInfoCli(it, isWindows, pathExists, isConsoleExecutable, commandRunner)
             }
+        }
 
         val pathSeparator = File.pathSeparatorChar
-        val pathExts = if (osName.lowercase(Locale.ROOT).contains("win")) {
+        val pathExts = if (isWindows) {
             listOf("", ".exe", ".cmd", ".bat")
         } else {
             listOf("")
         }
-        val commandNames = listOf("MediaInfo", "MediaInfo.exe", "mediainfo")
+        val commandNames = listOf("mediainfo", "mediainfo.exe", "MediaInfo", "MediaInfo.exe")
         val pathDirs = env["PATH"].orEmpty().split(pathSeparator).filter { it.isNotBlank() }
         for (dir in pathDirs) {
             for (name in commandNames) {
                 val candidates = if (name.contains('.')) listOf(name) else pathExts.map { "$name$it" }
                 for (candidateName in candidates) {
                     val candidate = File(dir, candidateName).absolutePath
-                    if (pathExists(candidate) && pathExecutable(candidate)) return candidate
+                    checkCandidate(candidate)?.let { return it }
                 }
             }
         }
 
-        if (osName.lowercase(Locale.ROOT).contains("win")) {
+        if (isWindows) {
             val commonPaths = listOf(
-                "C:\\Program Files\\MediaInfo\\MediaInfo.exe",
-                "C:\\Program Files (x86)\\MediaInfo\\MediaInfo.exe"
+                "C:\\Program Files\\MediaInfo CLI\\MediaInfo.exe",
+                "C:\\Program Files (x86)\\MediaInfo CLI\\MediaInfo.exe",
+                "C:\\Program Files\\MediaInfo_CLI\\MediaInfo.exe",
+                "C:\\Program Files (x86)\\MediaInfo_CLI\\MediaInfo.exe"
             )
-            return commonPaths.firstOrNull { pathExists(it) }
+            commonPaths.forEach { candidate ->
+                checkCandidate(candidate)?.let { return it }
+            }
         }
 
         return null
+    }
+
+    private fun isMediaInfoCli(
+        candidate: String,
+        isWindows: Boolean,
+        pathExists: (String) -> Boolean,
+        isConsoleExecutable: (String) -> Boolean,
+        commandRunner: (List<String>) -> String?
+    ): Boolean {
+        if (!pathExists(candidate)) return false
+        if (isWindows && candidate.endsWith(".exe", ignoreCase = true) && !isConsoleExecutable(candidate)) {
+            return false
+        }
+        val output = commandRunner(listOf(candidate, "--Version")) ?: return false
+        return output.isNotBlank() && output.lowercase(Locale.ROOT).contains("mediainfo")
+    }
+
+    private fun isWindowsConsoleExecutable(candidate: String): Boolean {
+        return runCatching {
+            val bytes = File(candidate).readBytes()
+            if (bytes.size < 0x40) return@runCatching false
+            fun uShort(offset: Int): Int {
+                if (offset + 1 >= bytes.size) return -1
+                return (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
+            }
+            fun int(offset: Int): Int {
+                if (offset + 3 >= bytes.size) return -1
+                return (bytes[offset].toInt() and 0xff) or
+                    ((bytes[offset + 1].toInt() and 0xff) shl 8) or
+                    ((bytes[offset + 2].toInt() and 0xff) shl 16) or
+                    ((bytes[offset + 3].toInt() and 0xff) shl 24)
+            }
+            if (uShort(0) != 0x5a4d) return@runCatching false
+            val peOffset = int(0x3c)
+            if (peOffset <= 0 || peOffset + 0x5f >= bytes.size) return@runCatching false
+            if (int(peOffset) != 0x00004550) return@runCatching false
+            val subsystem = uShort(peOffset + 4 + 20 + 68)
+            subsystem == 3
+        }.getOrDefault(false)
     }
 
     private fun stringValue(json: JsonObject, vararg keys: String): String {

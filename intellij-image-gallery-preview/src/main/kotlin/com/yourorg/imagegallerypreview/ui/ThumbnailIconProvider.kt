@@ -55,6 +55,11 @@ object ThumbnailIconProvider {
             AssetKind.MID,
             AssetKind.MIDI,
             AssetKind.CAF,
+            AssetKind.WMA,
+            AssetKind.AIFF,
+            AssetKind.AIF,
+            AssetKind.ALAC,
+            AssetKind.MKA,
             AssetKind.MP4,
             AssetKind.M4V,
             AssetKind.MOV,
@@ -62,7 +67,13 @@ object ThumbnailIconProvider {
             AssetKind.MKV,
             AssetKind.AVI,
             AssetKind.THREE_GP,
-            AssetKind.THREE_GPP -> createTypePlaceholder(item.formatFamily, size)
+            AssetKind.THREE_GPP,
+            AssetKind.MPEG,
+            AssetKind.MPG,
+            AssetKind.TS,
+            AssetKind.M2TS,
+            AssetKind.WMV,
+            AssetKind.FLV -> createTypePlaceholder(item.formatFamily, size)
 
             AssetKind.OTHER -> AllIcons.FileTypes.Any_type
         }
@@ -229,6 +240,11 @@ object ThumbnailIconProvider {
             AssetKind.MID,
             AssetKind.MIDI,
             AssetKind.CAF,
+            AssetKind.WMA,
+            AssetKind.AIFF,
+            AssetKind.AIF,
+            AssetKind.ALAC,
+            AssetKind.MKA,
             AssetKind.MP4,
             AssetKind.M4V,
             AssetKind.MOV,
@@ -237,6 +253,12 @@ object ThumbnailIconProvider {
             AssetKind.AVI,
             AssetKind.THREE_GP,
             AssetKind.THREE_GPP,
+            AssetKind.MPEG,
+            AssetKind.MPG,
+            AssetKind.TS,
+            AssetKind.M2TS,
+            AssetKind.WMV,
+            AssetKind.FLV,
             AssetKind.OTHER -> false
         }
     }

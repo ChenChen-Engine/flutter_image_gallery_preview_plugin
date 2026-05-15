@@ -64,6 +64,7 @@ input {
   min-width: 0;
   display: flex;
   align-items: center;
+  gap: 10px;
 }
 
 .toolbar-utility-row {
@@ -71,7 +72,7 @@ input {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 10px;
   min-width: 0;
 }
@@ -135,16 +136,8 @@ input {
 .zoom-cluster {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
   color: var(--muted);
   white-space: nowrap;
-}
-
-.zoom-label {
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: .02em;
-  text-transform: uppercase;
 }
 
 .zoom-controls {
@@ -1015,10 +1008,14 @@ input {
     border-radius: 18px 18px 0 0;
   }
 
+  .toolbar-search-row,
   .toolbar-utility-row {
     width: 100%;
     flex-wrap: wrap;
-    justify-content: flex-start;
+  }
+
+  .toolbar-utility-row {
+    justify-content: space-between;
   }
 
   .search-input {

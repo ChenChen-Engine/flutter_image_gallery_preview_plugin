@@ -323,6 +323,11 @@ class GalleryIndexService(private val project: Project) : Disposable {
             path.endsWith(".mid") ||
             path.endsWith(".midi") ||
             path.endsWith(".caf") ||
+            path.endsWith(".wma") ||
+            path.endsWith(".aiff") ||
+            path.endsWith(".aif") ||
+            path.endsWith(".alac") ||
+            path.endsWith(".mka") ||
             path.endsWith(".mp4") ||
             path.endsWith(".m4v") ||
             path.endsWith(".mov") ||
@@ -331,6 +336,12 @@ class GalleryIndexService(private val project: Project) : Disposable {
             path.endsWith(".avi") ||
             path.endsWith(".3gp") ||
             path.endsWith(".3gpp") ||
+            path.endsWith(".mpeg") ||
+            path.endsWith(".mpg") ||
+            path.endsWith(".ts") ||
+            path.endsWith(".m2ts") ||
+            path.endsWith(".wmv") ||
+            path.endsWith(".flv") ||
             path.endsWith(".json") ||
             path.endsWith(".xml")
     }

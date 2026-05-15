@@ -13,10 +13,12 @@ const IMAGE_FORMATS = new Set<AssetKind>([
   'heic', 'heif', 'apng', 'avif', 'ico'
 ]);
 const AUDIO_FORMATS = new Set<AssetKind>([
-  'mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'amr', 'mid', 'midi', 'caf'
+  'mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'amr', 'mid', 'midi', 'caf',
+  'wma', 'aiff', 'aif', 'alac', 'mka'
 ]);
 const VIDEO_FORMATS = new Set<AssetKind>([
-  'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', '3gp', '3gpp'
+  'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', '3gp', '3gpp',
+  'mpeg', 'mpg', 'ts', 'm2ts', 'wmv', 'flv'
 ]);
 const DIRECT_FORMATS = new Set<AssetKind>([...IMAGE_FORMATS, ...AUDIO_FORMATS, ...VIDEO_FORMATS]);
 
