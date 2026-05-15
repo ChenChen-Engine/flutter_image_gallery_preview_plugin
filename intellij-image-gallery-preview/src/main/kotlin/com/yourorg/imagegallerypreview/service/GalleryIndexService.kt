@@ -73,11 +73,6 @@ class GalleryIndexService(private val project: Project) : Disposable {
         val connection = project.messageBus.connect(this)
         connection.subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
             override fun after(events: List<com.intellij.openapi.vfs.newvfs.events.VFileEvent>) {
-                val createdFiles = events.filterIsInstance<VFileCreateEvent>()
-                    .map { event -> event.path.replace('\\', '/') }
-                    .filter { path -> isInterestingPath(path) }
-                    .distinct()
-
                 val relevant = events.any { event ->
                     (event is VFileCreateEvent || event is VFileDeleteEvent || event is VFileContentChangeEvent) &&
                         isInterestingPath(event.path)
@@ -85,11 +80,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
                 if (!relevant) return
 
-                syncAsync {
-                    createdFiles.forEach { createdPath ->
-                        handleCreatedFileDuplicateCheck(createdPath)
-                    }
-                }
+                syncAsync()
             }
         })
     }
@@ -156,8 +147,10 @@ class GalleryIndexService(private val project: Project) : Disposable {
                 if (forceReindex) {
                     MediaMetadataExtractor.clearCache()
                 }
+                val previousItems = cache
                 val discoveredItems = scanner.scan()
                 val items = enrichItems(discoveredItems, forceReindex, started)
+                val duplicateAlerts = duplicateAlertsFor(previousItems, items)
                 cache = items
                 duplicateIndex = buildDuplicateIndex(items)
 
@@ -175,6 +168,11 @@ class GalleryIndexService(private val project: Project) : Disposable {
                     )
                 )
                 callbackQueue.forEach { invokeOnEdt(it) }
+                duplicateAlerts.forEach { alert ->
+                    invokeOnEdt {
+                        showDuplicateDialogAndHandle(File(alert.newItem.absPath), alert.newItem.platform, alert.duplicates)
+                    }
+                }
             } catch (error: Throwable) {
                 publishStatus(
                     IndexStatus(
@@ -369,22 +367,32 @@ class GalleryIndexService(private val project: Project) : Disposable {
             }
     }
 
-    private fun handleCreatedFileDuplicateCheck(path: String) {
-        val absPath = AssetFileUtil.normalizePath(path)
-        val createdItem = cache.firstOrNull { AssetFileUtil.normalizePath(it.absPath) == absPath } ?: return
-        if (createdItem.mediaType != "image" || createdItem.resourceRootPath.isBlank() || createdItem.md5.isBlank()) return
+    private data class DuplicateAlert(
+        val newItem: GalleryAssetItem,
+        val duplicates: List<GalleryAssetItem>
+    )
 
-        val file = File(absPath)
-        if (!file.exists() || !file.isFile) return
+    private fun duplicateAlertsFor(
+        previousItems: List<GalleryAssetItem>,
+        currentItems: List<GalleryAssetItem>
+    ): List<DuplicateAlert> {
+        if (previousItems.isEmpty()) return emptyList()
+        val previousByPath = previousItems.associateBy { AssetFileUtil.normalizePath(it.absPath) }
+        val currentIndex = buildDuplicateIndex(currentItems)
 
-        val duplicates = duplicateIndex[createdItem.platform]
-            ?.get(createdItem.md5)
-            ?.filter { item -> AssetFileUtil.normalizePath(item.absPath) != absPath }
-            .orEmpty()
+        return currentItems.mapNotNull { item ->
+            if (item.mediaType != "image" || item.resourceRootPath.isBlank() || item.md5.isBlank()) return@mapNotNull null
+            val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
+            val previous = previousByPath[normalizedPath]
+            val isNewOrChanged = previous == null || previous.md5 != item.md5
+            if (!isNewOrChanged) return@mapNotNull null
 
-        if (duplicates.isEmpty()) return
-
-        showDuplicateDialogAndHandle(file, createdItem.platform, duplicates)
+            val duplicates = currentIndex[item.platform]
+                ?.get(item.md5)
+                ?.filter { candidate -> AssetFileUtil.normalizePath(candidate.absPath) != normalizedPath }
+                .orEmpty()
+            if (duplicates.isEmpty()) null else DuplicateAlert(item, duplicates)
+        }
     }
 
     private fun showDuplicateDialogAndHandle(newFile: File, platform: String, duplicates: List<GalleryAssetItem>) {

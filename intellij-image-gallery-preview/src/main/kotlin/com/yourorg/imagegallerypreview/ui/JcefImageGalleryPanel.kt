@@ -23,6 +23,7 @@ import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefJSQuery
 import com.intellij.util.ui.JBUI
 import com.yourorg.imagegallerypreview.metadata.MediaMetadataExtractor
+import com.yourorg.imagegallerypreview.metadata.VideoThumbnailProvider
 import com.yourorg.imagegallerypreview.model.GalleryAssetItem
 import com.yourorg.imagegallerypreview.service.GalleryIndexService
 import com.yourorg.imagegallerypreview.util.AssetFileUtil
@@ -158,11 +159,12 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             val assets = snapshot.map { item ->
                 val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
                 val file = File(normalizedPath)
-                val previewSrc = if (item.mediaType == "image" || item.formatFamily == "lottie") {
-                    file.toURI().toASCIIString()
-                } else {
-                    null
+                val previewFile = when {
+                    item.mediaType == "image" || item.formatFamily == "lottie" -> file
+                    item.mediaType == "video" -> VideoThumbnailProvider.thumbnailFor(item)
+                    else -> null
                 }
+                val previewSrc = previewFile?.toURI()?.toASCIIString()
                 val lottieJson = if (item.formatFamily == "lottie") readSmallTextFile(normalizedPath) else null
                 GalleryWebPayloadBuilder.toWebAsset(item, previewSrc, lottieJson)
             }

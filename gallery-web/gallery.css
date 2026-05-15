@@ -182,6 +182,18 @@ input {
   background: rgba(255, 255, 255, .12);
 }
 
+.button-svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+  margin: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .icon-button:disabled {
   opacity: .45;
   cursor: not-allowed;
@@ -457,6 +469,14 @@ input {
 
 .video-placeholder.has-video-preview {
   padding: 0;
+  background: #0a0c10;
+}
+
+.video-cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .media-icon {

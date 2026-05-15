@@ -5,6 +5,7 @@ import { Worker } from 'worker_threads';
 import { extractMediaInfo, seedMediaInfoCache } from './mediaMetadata';
 import { ScanWorkerMessage, ScanWorkerProgress } from './scanWorker';
 import { GalleryAssetItem, MediaMetadataInfo, PlatformType } from './shared/types';
+import { thumbnailForVideo, VIDEO_THUMBNAIL_DIR } from './videoThumbnail';
 import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
 const SCAN_TIMEOUT_MS = 120_000;
@@ -140,6 +141,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [
         vscode.Uri.file(path.join(this.context.extensionPath, 'webview')),
+        vscode.Uri.file(VIDEO_THUMBNAIL_DIR),
         ...(vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri)
       ]
     };
@@ -259,6 +261,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private async performRefresh(forceReindex: boolean): Promise<void> {
     const started = Date.now();
     const operation = forceReindex ? 'refresh' : 'sync';
+    const previousItems = this.cachedItems;
     this.output.appendLine(`[${operation}] starting workspace index`);
     if (forceReindex) this.infoCache.clear();
     await this.postLoadingState(true, forceReindex ? 'Reindexing assets...' : 'Syncing assets...');
@@ -326,6 +329,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       console.info(`[Image Gallery Preview] Indexed ${items.length} assets in ${elapsed}ms`);
       this.output.appendLine(`[${operation}] indexed ${items.length} assets in ${elapsed}ms`);
       await this.postLoadingState(false, `Updated ${new Date().toLocaleTimeString()}`);
+      await this.handleDuplicateAlerts(previousItems, items);
 
       const callbacks = this.afterRefreshQueue.splice(0, this.afterRefreshQueue.length);
       for (const callback of callbacks) {
@@ -342,15 +346,16 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private async postAssets(): Promise<void> {
     if (!this.view) return;
 
-    const serialized: WebviewAssetItem[] = this.cachedItems.map((item) => {
+    const serialized: WebviewAssetItem[] = [];
+    for (const item of this.cachedItems) {
       const normalizedAbsPath = normalizePath(item.absPath);
-      const previewUri = previewUriForItem(this.view!.webview, item);
+      const previewUri = await previewUriForItem(this.view!.webview, item);
       const lottieJson = item.formatFamily === 'lottie' ? readSmallTextFile(normalizedAbsPath) : null;
-      return {
+      serialized.push({
         ...toWebviewAssetItem(item, previewUri, lottieJson),
         mediaInfo: this.infoCache.get(normalizedAbsPath) ?? item.mediaInfo
-      };
-    });
+      });
+    }
 
     await this.view.webview.postMessage({ type: 'assets', items: serialized });
   }
@@ -379,17 +384,33 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     return index;
   }
 
-  private async handleCreatedFile(fsPath: string, items: GalleryAssetItem[]): Promise<void> {
-    const absPath = normalizePath(fsPath);
-    const createdItem = items.find((item) => normalizePath(item.absPath) === absPath);
-    if (!createdItem || createdItem.mediaType !== 'image' || !createdItem.resourceRootPath || !createdItem.md5) return;
+  private duplicateAlertsFor(previousItems: GalleryAssetItem[], currentItems: GalleryAssetItem[]): Array<{ newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] }> {
+    if (!previousItems.length) return [];
 
-    const platformMap = this.duplicateIndex.get(createdItem.platform);
-    if (!platformMap) return;
+    const previousByPath = new Map(previousItems.map((item) => [normalizePath(item.absPath), item]));
+    const currentIndex = this.buildDuplicateIndex(currentItems);
 
-    const duplicates = (platformMap.get(createdItem.md5) ?? []).filter((item) => normalizePath(item.absPath) !== absPath);
-    if (duplicates.length === 0) return;
+    return currentItems.flatMap((item) => {
+      if (item.mediaType !== 'image' || !item.resourceRootPath || !item.md5) return [];
+      const normalizedPath = normalizePath(item.absPath);
+      const previous = previousByPath.get(normalizedPath);
+      const isNewOrChanged = !previous || previous.md5 !== item.md5;
+      if (!isNewOrChanged) return [];
 
+      const duplicates = (currentIndex.get(item.platform)?.get(item.md5) ?? [])
+        .filter((candidate) => normalizePath(candidate.absPath) !== normalizedPath);
+      return duplicates.length ? [{ newItem: item, duplicates }] : [];
+    });
+  }
+
+  private async handleDuplicateAlerts(previousItems: GalleryAssetItem[], currentItems: GalleryAssetItem[]): Promise<void> {
+    for (const alert of this.duplicateAlertsFor(previousItems, currentItems)) {
+      await this.showDuplicateDialogAndHandle(alert.newItem, alert.duplicates);
+    }
+  }
+
+  private async showDuplicateDialogAndHandle(createdItem: GalleryAssetItem, duplicates: GalleryAssetItem[]): Promise<void> {
+    const absPath = normalizePath(createdItem.absPath);
     let selected = duplicates[0];
     if (duplicates.length > 1) {
       const picked = await vscode.window.showQuickPick(
@@ -451,10 +472,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       const watcher = vscode.workspace.createFileSystemWatcher(pattern);
 
       watcher.onDidCreate((uri) => {
-        if (!isInterestingFsPath(uri.fsPath)) return;
-        void this.sync(async (items) => {
-          await this.handleCreatedFile(uri.fsPath, items);
-        });
+        if (isInterestingFsPath(uri.fsPath)) void this.sync();
       });
 
       const onChange = (uri: vscode.Uri) => {
@@ -496,7 +514,12 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
-export function previewUriForItem(webview: vscode.Webview, item: GalleryAssetItem): string | null {
+export async function previewUriForItem(webview: vscode.Webview, item: GalleryAssetItem): Promise<string | null> {
+  if (item.mediaType === 'video') {
+    const thumbnailPath = await thumbnailForVideo(item.absPath);
+    return thumbnailPath ? webview.asWebviewUri(vscode.Uri.file(thumbnailPath)).toString() : null;
+  }
+
   const renderable = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'apng', 'avif', 'ico', 'lottie'].includes(item.formatFamily);
   if (!renderable) return null;
   return webview.asWebviewUri(vscode.Uri.file(item.absPath)).toString();

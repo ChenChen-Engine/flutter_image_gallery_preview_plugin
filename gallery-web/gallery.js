@@ -819,15 +819,44 @@
   function appendVideoPreview(container, item) {
     const wrapper = document.createElement('div');
     wrapper.className = 'media-placeholder video-placeholder';
+    if (item.previewSrc) {
+      wrapper.classList.add('has-video-preview');
+      const image = document.createElement('img');
+      image.className = 'video-cover-img';
+      image.alt = fileNameOf(item);
+      image.loading = 'lazy';
+      image.src = item.previewSrc;
+      image.addEventListener('error', () => {
+        wrapper.classList.remove('has-video-preview');
+        wrapper.replaceChildren();
+        appendVideoPlaceholderContents(wrapper, item);
+      }, { once: true });
+      wrapper.appendChild(image);
+    } else {
+      appendVideoPlaceholderContents(wrapper, item);
+    }
+    const play = createExternalPlayButton(item, 'Open with default app');
+    wrapper.appendChild(play);
+    container.appendChild(wrapper);
+  }
+
+  function appendVideoPlaceholderContents(wrapper, item) {
     const icon = document.createElement('div');
     icon.className = 'media-icon';
-    icon.textContent = '▣';
+    icon.textContent = '\u25a3';
     const label = document.createElement('div');
     label.textContent = String(item.formatFamily || 'VIDEO').toUpperCase();
+    wrapper.appendChild(icon);
+    wrapper.appendChild(label);
+  }
+
+  function createExternalPlayButton(item, title) {
     const play = document.createElement('span');
     play.className = 'media-play-button';
-    play.textContent = '▶';
-    play.title = '播放视频';
+    play.textContent = '\u25b6';
+    play.title = title;
+    play.tabIndex = 0;
+    play.setAttribute('role', 'button');
     play.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -839,16 +868,7 @@
       event.stopPropagation();
       post('openWithDefaultApp', { absPath: item.absPath });
     });
-    icon.textContent = '\u25a3';
-    play.textContent = '▶';
-    play.title = 'Open with default app';
-    play.textContent = '\u25b6';
-    play.tabIndex = 0;
-    play.setAttribute('role', 'button');
-    wrapper.appendChild(icon);
-    wrapper.appendChild(label);
-    wrapper.appendChild(play);
-    container.appendChild(wrapper);
+    return play;
   }
 
   function durationBadge(item) {
