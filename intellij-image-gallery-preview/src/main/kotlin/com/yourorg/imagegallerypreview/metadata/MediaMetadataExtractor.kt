@@ -26,11 +26,16 @@ data class MediaMetadataResult(
 object MediaMetadataExtractor {
     private const val MEDIAINFO_DOWNLOAD_URL = "https://mediaarea.net/en/MediaInfo/Download/Windows"
     private const val UNKNOWN = "Unknown"
+    private const val TIMEOUT_FALLBACK_SOURCE = "Timed out fallback"
 
     private val cache = ConcurrentHashMap<String, MediaMetadataResult>()
     private val fxInitialized = AtomicBoolean(false)
 
-    fun infoFor(item: GalleryAssetItem): MediaMetadataInfo = extractFor(item).info
+    fun infoFor(item: GalleryAssetItem, force: Boolean = false): MediaMetadataInfo = extractFor(item, force).info
+
+    fun isTimeoutFallback(info: MediaMetadataInfo?): Boolean {
+        return info?.source?.startsWith(TIMEOUT_FALLBACK_SOURCE, ignoreCase = true) == true
+    }
 
     fun clearCache() {
         cache.clear()
@@ -48,6 +53,38 @@ object MediaMetadataExtractor {
         return cache.computeIfAbsent(key) {
             extract(item, file)
         }
+    }
+
+    fun timeoutFallbackFor(item: GalleryAssetItem, reason: String = "metadata extraction timed out"): MediaMetadataResult {
+        val file = File(item.absPath)
+        val durationMillis = item.durationMillis
+        if (item.mediaType == "image") {
+            val fileSize = if (file.exists()) file.length() else -1L
+            val imageInfo = ImageMetadataInfo(
+                width = item.width?.toString() ?: UNKNOWN,
+                height = item.height?.toString() ?: UNKNOWN,
+                colorSpace = UNKNOWN,
+                chromaSubsampling = UNKNOWN,
+                bitDepth = UNKNOWN,
+                compressionMode = UNKNOWN,
+                streamSize = ImageMetadataInfo.readableBytes(fileSize),
+                fileSize = ImageMetadataInfo.readableBytes(fileSize),
+                format = item.format.uppercase(Locale.ROOT),
+                absPath = AssetFileUtil.normalizePath(item.absPath)
+            )
+            return MediaMetadataResult(
+                info = imageInfo.toMediaInfo(source = "$TIMEOUT_FALLBACK_SOURCE ($reason)"),
+                imageInfo = imageInfo
+            )
+        }
+
+        return MediaMetadataResult(
+            info = fallbackInfo(file, item, durationMillis).copy(
+                source = "$TIMEOUT_FALLBACK_SOURCE ($reason)",
+                installHint = null
+            ),
+            durationMillis = durationMillis
+        )
     }
 
     internal fun mediaInfoProbeCommands(
@@ -126,10 +163,10 @@ object MediaMetadataExtractor {
         )
     }
 
-    private fun ImageMetadataInfo.toMediaInfo(): MediaMetadataInfo {
+    private fun ImageMetadataInfo.toMediaInfo(source: String = "Built-in"): MediaMetadataInfo {
         return MediaMetadataInfo(
             mediaType = "image",
-            source = "Built-in",
+            source = source,
             sections = listOf(
                 MetadataSection(
                     title = "Image",

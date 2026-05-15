@@ -204,7 +204,11 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             ?: return
 
         ApplicationManager.getApplication().executeOnPooledThread {
-            val info = item.mediaInfo ?: MediaMetadataExtractor.infoFor(item)
+            val info = if (MediaMetadataExtractor.isTimeoutFallback(item.mediaInfo)) {
+                MediaMetadataExtractor.infoFor(item, force = true)
+            } else {
+                item.mediaInfo ?: MediaMetadataExtractor.infoFor(item)
+            }
             sendToWeb(
                 mapOf(
                     "type" to "imageInfo",

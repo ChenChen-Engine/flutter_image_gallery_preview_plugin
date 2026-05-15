@@ -133,7 +133,7 @@ The shared web layer does not guess platform copy rules. Host code sends the fin
 
 ### Images
 
-- Image metadata is extracted with built-in libraries.
+- Image metadata is resolved MediaInfo-first, then merged with built-in library metadata for dimensions and image-specific fallbacks.
 - The image metadata contract includes:
   - `width`
   - `height`
@@ -148,12 +148,13 @@ The shared web layer does not guess platform copy rules. Host code sends the fin
 
 ### Audio and video
 
-- Metadata resolution order is:
+- Metadata resolution order for every indexed item is:
   1. MediaInfo CLI
   2. built-in / native metadata
-  3. `ffprobe` to fill stream and duration gaps
+  3. `ffprobe` to fill audio / video stream and duration gaps
   4. built-in fallback metadata
 - Metadata is enriched with bounded parallelism (`max 6`) after discovery and before publish.
+- A single item can time out and fall back to lightweight metadata so indexing continues; timed-out metadata is not treated as rich cache, and clicking `i` retries extraction on demand.
 - MediaInfo JSON keeps all primitive track fields; row truncation is intentionally avoided so the `i` dialog can show complete CLI output.
 - MediaInfo text reports are also parsed because `mediaInfo --output=json <file>` can return the default readable report on MediaInfo CLI v26.05.
 - Windows direct executable fallback checks PATH and common CLI install directories across all drive letters, including `MediaInfo_Cli`.
@@ -194,7 +195,7 @@ Relevant files:
 - Both hosts render audio/video as non-playing placeholders in the shared web UI.
 - The center play button calls `openWithDefaultApp`, so playback always happens in the OS default associated app.
 - The play button keeps the original centered circular overlay visual; only the behavior changed.
-- Duration is rendered as a bottom-centered overlay inside the thumbnail border with a 2px bottom offset.
+- Duration is rendered as a bottom-centered overlay inside the thumbnail border with a 4px bottom offset.
 - Single-click copy and double-click reveal stay unchanged.
 - Indexed metadata is shown immediately from the cached payload; `requestMediaInfo` remains only as a defensive fallback path.
 
@@ -204,6 +205,7 @@ Relevant files:
 - `Refresh` is a forced reindex path. It clears or bypasses metadata cache and reruns MediaInfo / native / ffprobe enrichment.
 - IntelliJ shows a Swing-side loading fallback before the JCEF web UI reports `ready`, preventing a blank Image Gallery window after IDE restart.
 - Loading payloads can include `phase`, item counts, metadata counts, current path, fallback source, elapsed time, worker status, partial count, and diagnostic text.
+- If a metadata item times out, both hosts publish a diagnostic and keep scanning instead of waiting indefinitely.
 - VSCode mirrors worker diagnostics into the `Image Gallery Preview` OutputChannel; if loading gets stuck, collect both overlay text and OutputChannel lines beginning with `[sync]`, `[refresh]`, or `[worker:...]`.
 
 ### Tradeoff
@@ -246,6 +248,10 @@ The implementation evolved in these stages:
    - full MediaInfo row retention
    - IntelliJ host-side loading fallback
    - expanded VSCode loading and OutputChannel diagnostics
+8. Timeout hardening:
+   - per-file metadata timeout fallback in IntelliJ and VSCode
+   - click-`i` forced metadata retry when indexed metadata is a timeout fallback
+   - VSCode worker passes cache keys instead of full metadata payloads to reduce worker IPC pressure
 
 ## Data model contract
 
@@ -290,7 +296,7 @@ The plugins align on these core fields:
   - configured in `intellij-image-gallery-preview/gradle.properties`
 - IntelliJ Gradle mirror:
   - `https://mirrors.cloud.tencent.com/gradle/gradle-9.2.0-bin.zip`
-- IntelliJ packaging now also bundles JavaFX runtime dependencies for native media playback.
+- IntelliJ packaging bundles JavaFX runtime dependencies for native media metadata probing.
 
 ## Packaging behavior
 

@@ -22,11 +22,13 @@ export async function enrichIndexedItem(
   deps: ResolveIndexedMediaInfoDependencies = defaultResolveDependencies
 ): Promise<GalleryAssetItem> {
   if (item.mediaType === 'image') {
+    const mediaInfo = await deps.loadMediaInfoCli(item);
     const imageInfo = await deps.loadImageInfo(item);
+    const builtInInfo = imageInfoToMediaInfo(imageInfo);
     return {
       ...item,
       imageInfo,
-      mediaInfo: imageInfoToMediaInfo(imageInfo)
+      mediaInfo: mediaInfo ? mergeMetadataSources(mediaInfo, [builtInInfo]) : builtInInfo
     };
   }
 
@@ -43,7 +45,9 @@ export async function resolveIndexedMediaInfo(
   deps: ResolveIndexedMediaInfoDependencies = defaultResolveDependencies
 ): Promise<MediaMetadataInfo> {
   if (item.mediaType === 'image') {
-    return imageInfoToMediaInfo(await deps.loadImageInfo(item));
+    const mediaInfo = await deps.loadMediaInfoCli(item);
+    const builtIn = imageInfoToMediaInfo(await deps.loadImageInfo(item));
+    return mediaInfo ? mergeMetadataSources(mediaInfo, [builtIn]) : builtIn;
   }
 
   const mediaInfo = await deps.loadMediaInfoCli(item);

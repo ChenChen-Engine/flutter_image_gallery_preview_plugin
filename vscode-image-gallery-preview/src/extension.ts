@@ -26,15 +26,9 @@ export interface LoadingStateMessage {
   workerStatus?: string;
 }
 
-interface CachedMetadata {
-  durationMillis?: number | null;
-  imageInfo?: GalleryAssetItem['imageInfo'];
-  mediaInfo?: GalleryAssetItem['mediaInfo'];
-}
-
 function scanWorkspaceInWorker(
   roots: string[],
-  metadataCache: Array<[string, CachedMetadata]>,
+  metadataCacheKeys: string[],
   onProgress: (progress: ScanWorkerProgress) => void,
   onPartial: (items: GalleryAssetItem[], done: boolean) => void
 ): Promise<GalleryAssetItem[]> {
@@ -46,7 +40,7 @@ function scanWorkspaceInWorker(
     let timeout: NodeJS.Timeout | undefined;
     let staleTimer: NodeJS.Timeout | undefined;
 
-    const worker = new Worker(workerPath, { workerData: { roots, metadataCache } });
+    const worker = new Worker(workerPath, { workerData: { roots, metadataCacheKeys } });
 
     const resetStaleTimer = () => {
       if (staleTimer) clearTimeout(staleTimer);
@@ -273,12 +267,23 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       }
 
       const roots = vscode.workspace.workspaceFolders.map((folder) => folder.uri.fsPath);
-      const normalizeItems = (rawItems: GalleryAssetItem[]) => rawItems.map((item) => ({
-        ...item,
-        absPath: normalizePath(item.absPath),
-        relPath: normalizePath(item.relPath),
-        resourceRootPath: normalizePath(item.resourceRootPath)
-      }));
+      const metadataCache = metadataByKey(this.cachedItems);
+      const normalizeItems = (rawItems: GalleryAssetItem[]) => rawItems.map((item) => {
+        const normalized = {
+          ...item,
+          absPath: normalizePath(item.absPath),
+          relPath: normalizePath(item.relPath),
+          resourceRootPath: normalizePath(item.resourceRootPath)
+        };
+        const cached = metadataCache.get(metadataCacheKey(normalized));
+        if (!cached || normalized.mediaInfo) return normalized;
+        return {
+          ...normalized,
+          durationMillis: cached.durationMillis ?? normalized.durationMillis,
+          imageInfo: cached.imageInfo ?? normalized.imageInfo,
+          mediaInfo: cached.mediaInfo ?? normalized.mediaInfo
+        };
+      });
 
       const publishPartial = async (rawItems: GalleryAssetItem[], done: boolean) => {
         const partialItems = normalizeItems(rawItems);
@@ -293,7 +298,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
       const scannedItems = await scanWorkspaceInWorker(
         roots,
-        forceReindex ? [] : metadataCacheEntries(this.cachedItems),
+        forceReindex ? [] : [...metadataCache.keys()],
         (progress) => {
           this.output.appendLine(formatWorkerDiagnostic(progress));
           void this.postLoadingState(progress);
@@ -456,10 +461,10 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private async loadMediaInfo(absPath: string): Promise<MediaMetadataInfo> {
     const normalized = normalizePath(absPath);
     const cached = this.infoCache.get(normalized);
-    if (cached) return cached;
+    if (cached && !isTimeoutFallbackInfo(cached)) return cached;
 
     const item = this.cachedItems.find((entry) => normalizePath(entry.absPath) === normalized);
-    if (item?.mediaInfo) {
+    if (item?.mediaInfo && !isTimeoutFallbackInfo(item.mediaInfo)) {
       this.infoCache.set(normalized, item.mediaInfo);
       return item.mediaInfo;
     }
@@ -507,21 +512,32 @@ export function primeInfoCacheFromItems(items: GalleryAssetItem[]): Map<string, 
   return seedMediaInfoCache(items);
 }
 
-function metadataCacheEntries(items: GalleryAssetItem[]): Array<[string, CachedMetadata]> {
-  return items
-    .filter((item) => item.mediaInfo || item.imageInfo)
-    .map((item): [string, CachedMetadata] => [
-      metadataCacheKey(item),
-      {
-        durationMillis: item.durationMillis,
-        imageInfo: item.imageInfo,
-        mediaInfo: item.mediaInfo
-      }
-    ]);
+interface CachedMetadata {
+  durationMillis?: number | null;
+  imageInfo?: GalleryAssetItem['imageInfo'];
+  mediaInfo?: GalleryAssetItem['mediaInfo'];
+}
+
+function metadataByKey(items: GalleryAssetItem[]): Map<string, CachedMetadata> {
+  const cache = new Map<string, CachedMetadata>();
+  for (const item of items) {
+    if (!item.mediaInfo && !item.imageInfo) continue;
+    if (isTimeoutFallbackInfo(item.mediaInfo)) continue;
+    cache.set(metadataCacheKey(item), {
+      durationMillis: item.durationMillis,
+      imageInfo: item.imageInfo,
+      mediaInfo: item.mediaInfo
+    });
+  }
+  return cache;
 }
 
 function metadataCacheKey(item: GalleryAssetItem): string {
   return `${normalizePath(item.absPath)}|${item.mtime}|${item.mediaType}`;
+}
+
+function isTimeoutFallbackInfo(info: MediaMetadataInfo | null | undefined): boolean {
+  return typeof info?.source === 'string' && info.source.toLowerCase().startsWith('timed out fallback');
 }
 
 export function toLoadingStateMessage(progress: ScanWorkerProgress): LoadingStateMessage {

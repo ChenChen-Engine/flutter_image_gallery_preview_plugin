@@ -98,6 +98,34 @@ suite('scan worker', () => {
       'four.mp3'
     ]);
   });
+
+  test('falls back when a single metadata item times out', async () => {
+    const workerModule = require('../scanWorker') as Record<string, unknown>;
+    const runScanWorker = workerModule.runScanWorker as ((args: {
+      roots: string[];
+      postMessage: (message: any) => void;
+      scanAssets: (root: string) => GalleryAssetItem[];
+      enrichItem: (item: GalleryAssetItem) => Promise<GalleryAssetItem>;
+      heartbeatMs: number;
+      metadataParallelism: number;
+      metadataTimeoutMs: number;
+    }) => Promise<GalleryAssetItem[]>) | undefined;
+
+    assert.ok(runScanWorker, 'expected scanWorker to export runScanWorker');
+
+    const items = await runScanWorker!({
+      roots: ['C:/demo/one'],
+      postMessage: () => undefined,
+      scanAssets: () => [asset('stuck.mp3', 'audio')],
+      enrichItem: async () => new Promise<GalleryAssetItem>(() => undefined),
+      heartbeatMs: 0,
+      metadataParallelism: 1,
+      metadataTimeoutMs: 10
+    });
+
+    assert.strictEqual(items.length, 1);
+    assert.match(items[0].mediaInfo?.source ?? '', /^Timed out fallback/);
+  });
 });
 
 function asset(fileName: string, mediaType: GalleryAssetItem['mediaType']): GalleryAssetItem {

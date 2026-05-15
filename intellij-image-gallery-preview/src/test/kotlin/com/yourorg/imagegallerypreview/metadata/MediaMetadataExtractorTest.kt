@@ -2,6 +2,7 @@ package com.yourorg.imagegallerypreview.metadata
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class MediaMetadataExtractorTest {
 
@@ -150,5 +151,43 @@ class MediaMetadataExtractorTest {
     @Test
     fun `exposes cache controls for forced refresh`() {
         MediaMetadataExtractor.clearCache()
+    }
+
+    @Test
+    fun `creates timeout fallback metadata for unresolved media item`() {
+        val item = com.yourorg.imagegallerypreview.model.GalleryAssetItem(
+            sourceType = com.yourorg.imagegallerypreview.model.SourceType.FLUTTER_ASSET,
+            platform = "flutter",
+            workspaceKind = "flutter",
+            projectName = "demo",
+            projectPath = "C:/demo",
+            projectRelPath = ".",
+            isPrimaryProject = true,
+            moduleName = "demo",
+            modulePath = "C:/demo",
+            moduleRelPath = ".",
+            isPrimaryModule = true,
+            groupPath = "assets/audio",
+            copyToken = "assets/audio/stuck.mp3",
+            md5 = "",
+            formatFamily = "mp3",
+            isAnimated = false,
+            mediaType = "audio",
+            durationMillis = null,
+            resourceRootPath = "C:/demo/assets/audio",
+            absPath = "C:/demo/assets/audio/stuck.mp3",
+            relPath = "assets/audio/stuck.mp3",
+            format = "mp3",
+            width = null,
+            height = null,
+            qualifier = "",
+            mtime = 1L,
+            kind = com.yourorg.imagegallerypreview.model.AssetKind.fromFormatFamily("mp3")
+        )
+
+        val result = MediaMetadataExtractor.timeoutFallbackFor(item)
+
+        assertTrue(MediaMetadataExtractor.isTimeoutFallback(result.info))
+        assertEquals("audio", result.info.mediaType)
     }
 }

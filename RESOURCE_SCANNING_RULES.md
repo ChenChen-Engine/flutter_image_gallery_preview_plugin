@@ -78,6 +78,8 @@ Both plugins align on:
 - Some MediaInfo CLI builds return the default readable text report for that lowercase flag; hosts parse both JSON and text reports.
 - Windows direct executable fallback scans PATH plus common CLI install directories on all local drive letters, including `MediaInfo_Cli`.
 - Metadata extraction is bounded parallel work with a maximum of 6 concurrent items per host.
+- A single item is allowed to time out and fall back to lightweight metadata; indexing continues.
+- Timed-out fallback metadata is not treated as a permanent rich metadata cache. Clicking `i` retries extraction on demand.
 - Host parsers keep every primitive MediaInfo track field; they do not cap the modal rows at 80.
 - If MediaInfo CLI is unavailable or incomplete, hosts merge built-in/native metadata and `ffprobe`.
 - `requestMediaInfo` remains a defensive fallback only when indexed metadata is missing.

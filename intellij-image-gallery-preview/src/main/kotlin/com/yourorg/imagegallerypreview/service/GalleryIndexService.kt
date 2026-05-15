@@ -23,6 +23,8 @@ import java.util.concurrent.Callable
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 @Service(Service.Level.PROJECT)
@@ -238,39 +240,44 @@ class GalleryIndexService(private val project: Project) : Disposable {
         val executor = Executors.newFixedThreadPool(minOf(MAX_METADATA_PARALLELISM, items.size))
         val completion = ExecutorCompletionService<Pair<Int, GalleryAssetItem>>(executor)
         val ordered = arrayOfNulls<GalleryAssetItem>(items.size)
+        val pending = mutableMapOf<Future<Pair<Int, GalleryAssetItem>>, Pair<Int, Long>>()
 
         try {
             items.forEachIndexed { index, item ->
-                completion.submit(Callable {
+                val future = completion.submit(Callable {
                     index to enrichItem(item, forceReindex)
                 })
+                pending[future] = index to System.currentTimeMillis()
             }
 
             var processed = 0
-            repeat(items.size) {
-                val (index, item) = completion.take().get()
-                ordered[index] = item
-                processed += 1
+            while (pending.isNotEmpty()) {
+                val completed = completion.poll(500, TimeUnit.MILLISECONDS)
+                if (completed != null) {
+                    val fallbackIndex = pending.remove(completed)?.first ?: continue
+                    val (index, item) = try {
+                        completed.get()
+                    } catch (error: Throwable) {
+                        fallbackIndex to timeoutFallbackItem(items[fallbackIndex], "metadata extraction failed: ${error.javaClass.simpleName}")
+                    }
+                    ordered[index] = item
+                    processed += 1
+                    publishMetadataProgress(items, item, processed, startedMillis)
+                    continue
+                }
 
-                val fallbackSource = item.mediaInfo?.source
-                    ?.takeUnless { it.contains("MediaInfo", ignoreCase = true) }
-                val diagnostic = if (fallbackSource == null) null else "MediaInfo unavailable; used $fallbackSource"
-
-                if (processed == 1 || processed == items.size || processed % 10 == 0) {
-                    publishStatus(
-                        IndexStatus(
-                            state = IndexState.INDEXING,
-                            message = "Resolving metadata...",
-                            phase = "resolving_metadata",
-                            indexedCount = items.size,
-                            metadataCount = processed,
-                            currentPath = AssetFileUtil.normalizePath(item.absPath),
-                            fallbackSource = fallbackSource,
-                            elapsedMillis = System.currentTimeMillis() - startedMillis,
-                            workerStatus = "metadata_parallel_$MAX_METADATA_PARALLELISM",
-                            diagnostic = diagnostic
-                        )
-                    )
+                val now = System.currentTimeMillis()
+                val timedOut = pending.filterValues { (_, submittedAt) ->
+                    now - submittedAt >= METADATA_ITEM_TIMEOUT_MS
+                }
+                for ((future, value) in timedOut) {
+                    val index = value.first
+                    if (pending.remove(future) == null) continue
+                    future.cancel(true)
+                    val item = timeoutFallbackItem(items[index], "timed out after ${METADATA_ITEM_TIMEOUT_MS / 1000}s")
+                    ordered[index] = item
+                    processed += 1
+                    publishMetadataProgress(items, item, processed, startedMillis)
                 }
             }
         } finally {
@@ -287,6 +294,47 @@ class GalleryIndexService(private val project: Project) : Disposable {
             imageInfo = metadata.imageInfo ?: item.imageInfo,
             mediaInfo = metadata.info
         )
+    }
+
+    private fun timeoutFallbackItem(item: GalleryAssetItem, reason: String): GalleryAssetItem {
+        val metadata = MediaMetadataExtractor.timeoutFallbackFor(item, reason)
+        return item.copy(
+            durationMillis = metadata.durationMillis ?: item.durationMillis,
+            imageInfo = metadata.imageInfo ?: item.imageInfo,
+            mediaInfo = metadata.info
+        )
+    }
+
+    private fun publishMetadataProgress(
+        allItems: List<GalleryAssetItem>,
+        item: GalleryAssetItem,
+        processed: Int,
+        startedMillis: Long
+    ) {
+        val fallbackSource = item.mediaInfo?.source
+            ?.takeUnless { it.contains("MediaInfo", ignoreCase = true) }
+        val diagnostic = when {
+            MediaMetadataExtractor.isTimeoutFallback(item.mediaInfo) -> "Metadata timed out; click i to retry on demand."
+            fallbackSource != null -> "MediaInfo unavailable; used $fallbackSource"
+            else -> null
+        }
+
+        if (processed == 1 || processed == allItems.size || processed % 10 == 0 || diagnostic != null) {
+            publishStatus(
+                IndexStatus(
+                    state = IndexState.INDEXING,
+                    message = "Resolving metadata...",
+                    phase = "resolving_metadata",
+                    indexedCount = allItems.size,
+                    metadataCount = processed,
+                    currentPath = AssetFileUtil.normalizePath(item.absPath),
+                    fallbackSource = fallbackSource,
+                    elapsedMillis = System.currentTimeMillis() - startedMillis,
+                    workerStatus = "metadata_parallel_$MAX_METADATA_PARALLELISM",
+                    diagnostic = diagnostic
+                )
+            )
+        }
     }
 
     private fun publishStatus(status: IndexStatus) {
@@ -486,6 +534,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     companion object {
         private val MAX_METADATA_PARALLELISM = minOf(6, maxOf(2, Runtime.getRuntime().availableProcessors()))
+        private const val METADATA_ITEM_TIMEOUT_MS = 15_000L
 
         fun getInstance(project: Project): GalleryIndexService = project.getService(GalleryIndexService::class.java)
     }

@@ -43,6 +43,7 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
   - Windows MediaInfo CLI probe via `cmd /c mediaInfo --output=json <file>`
   - MediaInfo text-output parsing when that CLI flag returns the default readable report instead of JSON
   - bounded parallel metadata enrichment for faster MediaInfo / ffprobe extraction
+  - per-file metadata timeout fallback so one problematic resource cannot block indexing
   - full primitive MediaInfo track fields are retained for the `i` dialog
   - built-in image metadata extraction
   - native / built-in image and media metadata merge
@@ -59,6 +60,7 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
 - IntelliJ resolves indexed metadata before publishing assets and reports structured loading phases for discovery vs metadata enrichment.
 - IntelliJ shows a host-side loading fallback while JCEF is starting so the tool window is never blank.
 - VSCode uses incremental worker-based scanning, partial publishes, and loading diagnostics with phase/count/path, elapsed/heartbeat details, worker status, and OutputChannel diagnostics for long scans.
+- If an item times out during indexing, the gallery shows lightweight fallback metadata and clicking `i` retries extraction on demand.
 - MediaInfo GUI is intentionally ignored. Only MediaInfo CLI is considered valid metadata tooling.
 - Full implementation details and iteration history are recorded in `IMPLEMENTATION_HANDOFF.md`.
 

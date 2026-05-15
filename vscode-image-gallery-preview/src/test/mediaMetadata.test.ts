@@ -125,6 +125,65 @@ suite('media metadata helper', () => {
     assert.strictEqual(calls[0], 'mediainfo');
   });
 
+  test('uses MediaInfo as the primary image metadata source and merges built-in dimensions', async () => {
+    const metadataModule = require('../mediaMetadata') as Record<string, unknown>;
+    const enrichIndexedItem = metadataModule.enrichIndexedItem as ((item: GalleryAssetItem, deps: {
+      loadMediaInfoCli: (item: GalleryAssetItem) => Promise<MediaMetadataInfo | null>;
+      loadFfprobe: (item: GalleryAssetItem) => Promise<MediaMetadataInfo | null>;
+      loadBuiltIn: (item: GalleryAssetItem) => Promise<MediaMetadataInfo>;
+      loadImageInfo: () => Promise<{
+        width: string;
+        height: string;
+        colorSpace: string;
+        chromaSubsampling: string;
+        bitDepth: string;
+        compressionMode: string;
+        streamSize: string;
+        fileSize: string;
+        format: string;
+        absPath: string;
+      }>;
+    }) => Promise<GalleryAssetItem>) | undefined;
+
+    assert.ok(enrichIndexedItem, 'expected mediaMetadata helper to export enrichIndexedItem');
+
+    const item = asset('gif', 'image');
+    const enriched = await enrichIndexedItem!(item, {
+      loadMediaInfoCli: async () => info('image', 'MediaInfo (PATH)', {
+        General: {
+          'Complete name': item.absPath,
+          Format: 'GIF',
+          'File size': '601 KiB'
+        },
+        Image: {
+          Format: 'GIF',
+          'Format/Info': 'Graphics Interchange Format',
+          'Compression mode': 'Lossless'
+        }
+      }),
+      loadFfprobe: async () => null,
+      loadBuiltIn: async () => info('image', 'Built-in', { Image: {} }),
+      loadImageInfo: async () => ({
+        width: '600',
+        height: '600',
+        colorSpace: 'Unknown',
+        chromaSubsampling: 'Unknown',
+        bitDepth: 'Unknown',
+        compressionMode: 'Unknown',
+        streamSize: '601 KiB',
+        fileSize: '601 KiB',
+        format: 'GIF',
+        absPath: item.absPath
+      })
+    });
+
+    assert.strictEqual(enriched.mediaInfo?.source, 'MediaInfo (PATH)');
+    assert.strictEqual(rowValue(enriched.mediaInfo!, 'General', 'Format'), 'GIF');
+    assert.strictEqual(rowValue(enriched.mediaInfo!, 'Image', 'Format/Info'), 'Graphics Interchange Format');
+    assert.strictEqual(rowValue(enriched.mediaInfo!, 'Image', 'width'), '600');
+    assert.strictEqual(rowValue(enriched.mediaInfo!, 'Image', 'height'), '600');
+  });
+
   test('maps every primitive MediaInfo row without truncating at eighty entries', () => {
     const metadataModule = require('../mediaMetadata') as Record<string, unknown>;
     const mediaInfoTrackToSection = metadataModule.mediaInfoTrackToSection as ((track: Record<string, unknown>) => {
@@ -260,7 +319,7 @@ function asset(
   formatFamily: GalleryAssetItem['formatFamily'],
   mediaType: GalleryAssetItem['mediaType']
 ): GalleryAssetItem {
-  const extension = mediaType === 'audio' ? 'mp3' : 'mp4';
+  const extension = mediaType === 'audio' ? 'mp3' : mediaType === 'video' ? 'mp4' : 'gif';
   return {
     sourceType: 'flutter_asset',
     platform: 'flutter',
