@@ -36,9 +36,9 @@
       <div class="toolbar-utility-row">
         <div class="zoom-cluster" aria-label="Preview size">
           <div class="zoom-controls">
-            <button id="zoomOutButton" class="icon-button" type="button" title="缩小预览">−</button>
-            <button id="zoomResetButton" class="icon-button" type="button" title="还原默认尺寸">⟲</button>
-            <button id="zoomInButton" class="icon-button" type="button" title="放大预览">＋</button>
+            <button id="zoomOutButton" class="icon-button" type="button" title="Shrink preview">-</button>
+            <button id="zoomResetButton" class="icon-button" type="button" title="Reset preview size">R</button>
+            <button id="zoomInButton" class="icon-button" type="button" title="Enlarge preview">+</button>
           </div>
         </div>
         <div id="statusText" class="status-text">Visible 0 / Indexed 0</div>
@@ -53,6 +53,12 @@
     <div class="loading-card">
       <div class="spinner" aria-hidden="true"></div>
       <div id="loadingMessage" class="loading-message">Indexing assets...</div>
+      <div class="loading-details">
+        <div id="loadingPhase" class="loading-detail hidden"></div>
+        <div id="loadingCounts" class="loading-detail hidden"></div>
+        <div id="loadingFallback" class="loading-detail hidden"></div>
+        <div id="loadingPath" class="loading-path hidden"></div>
+      </div>
     </div>
   </div>
 
@@ -63,50 +69,9 @@
     <div class="modal-card">
       <div class="modal-header">
         <h2 id="infoTitle">Media Info</h2>
-        <button class="modal-close" type="button" data-close-modal aria-label="Close">×</button>
+        <button class="modal-close" type="button" data-close-modal aria-label="Close">x</button>
       </div>
       <div id="infoContent" class="info-content"></div>
-    </div>
-  </div>
-
-  <div id="videoModal" class="video-modal hidden" role="dialog" aria-modal="true" aria-label="Video player">
-    <div class="video-backdrop" data-close-video></div>
-    <div class="video-card">
-      <div class="video-topbar">
-        <div id="videoTitle" class="video-title"></div>
-        <button class="modal-close" type="button" data-close-video aria-label="Close">×</button>
-      </div>
-      <div class="video-stage">
-        <video id="videoPlayer" class="video-player" playsinline></video>
-        <button id="videoCenterButton" class="video-center-button" type="button" aria-label="Play or pause">▶</button>
-        <div class="video-controls">
-          <div class="video-progress-track" id="videoProgressTrack">
-            <div class="video-progress-fill" id="videoProgressFill"></div>
-          </div>
-          <div class="video-control-row">
-            <span id="videoTimeLabel" class="video-time-label">00:00 / 00:00</span>
-            <select id="videoRateSelect" class="video-rate-select" aria-label="Playback speed"></select>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div id="unsupportedModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Unsupported media">
-    <div class="modal-backdrop" data-close-unsupported></div>
-    <div class="modal-card unsupported-card">
-      <div class="modal-header">
-        <h2>Unsupported Media</h2>
-        <button class="modal-close" type="button" data-close-unsupported aria-label="Close">×</button>
-      </div>
-      <div class="unsupported-content">
-        <p id="unsupportedMessage">暂不支持播放该格式媒体。</p>
-        <div class="unsupported-actions">
-          <button id="openDefaultButton" class="primary-button" type="button">用系统默认应用打开</button>
-          <button id="openChooserButton" class="primary-button" type="button">选择其他应用打开</button>
-          <button id="showInSystemButton" class="primary-button" type="button">在文件管理器中显示</button>
-        </div>
-      </div>
     </div>
   </div>
 

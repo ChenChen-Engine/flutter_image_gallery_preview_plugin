@@ -44,7 +44,6 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     private val service = GalleryIndexService.getInstance(project)
     private val browser: JBCefBrowser?
     private val messageQuery: JBCefJSQuery?
-    private val mediaServer: LocalMediaStreamServer?
     private val latestItems = mutableListOf<GalleryAssetItem>()
 
     @Volatile
@@ -66,15 +65,12 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         if (!JBCefApp.isSupported()) {
             browser = null
             messageQuery = null
-            mediaServer = null
             add(createUnsupportedPanel(), BorderLayout.CENTER)
         } else {
             browser = JBCefBrowser()
             messageQuery = JBCefJSQuery.create(browser)
-            mediaServer = LocalMediaStreamServer(logger)
             Disposer.register(this, browser)
             Disposer.register(this, messageQuery)
-            Disposer.register(this, mediaServer)
             messageQuery.addHandler { rawMessage ->
                 handleWebMessage(rawMessage)
                 null
@@ -120,9 +116,6 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             "copy" -> ApplicationManager.getApplication().invokeLater {
                 copyText(message.string("value").orEmpty(), message.string("label").orEmpty())
             }
-            "open" -> message.string("absPath")?.let { absPath ->
-                ApplicationManager.getApplication().invokeLater { openAssetInProject(absPath) }
-            }
             "reveal" -> message.string("absPath")?.let { absPath ->
                 ApplicationManager.getApplication().invokeLater { openAssetInProject(absPath) }
             }
@@ -130,20 +123,8 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
                 ApplicationManager.getApplication().invokeLater { RevealFileAction.openFile(File(absPath)) }
             }
             "requestImageInfo", "requestMediaInfo" -> message.string("absPath")?.let(::sendMediaInfo)
-            "playNativeMedia" -> {
-                val absPath = message.string("absPath")
-                val mediaType = message.string("mediaType").orEmpty()
-                if (!absPath.isNullOrBlank()) {
-                    ApplicationManager.getApplication().invokeLater {
-                        NativeMediaPlayerDialog.open(project, absPath, mediaType)
-                    }
-                }
-            }
             "openWithDefaultApp" -> message.string("absPath")?.let { absPath ->
                 ApplicationManager.getApplication().executeOnPooledThread { openWithDefaultApp(absPath) }
-            }
-            "openWithChooser" -> message.string("absPath")?.let { absPath ->
-                ApplicationManager.getApplication().executeOnPooledThread { openWithChooser(absPath) }
             }
             "openExternal" -> message.string("url")?.let { url ->
                 ApplicationManager.getApplication().invokeLater { BrowserUtil.browse(url) }
@@ -161,10 +142,10 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             val assets = snapshot.map { item ->
                 val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
                 val file = File(normalizedPath)
-                val previewSrc = if (item.mediaType == "audio" || item.mediaType == "video") {
-                    mediaServer?.urlFor(file)
-                } else {
+                val previewSrc = if (item.mediaType == "image" || item.formatFamily == "lottie") {
                     file.toURI().toASCIIString()
+                } else {
+                    null
                 }
                 val lottieJson = if (item.formatFamily == "lottie") readSmallTextFile(normalizedPath) else null
                 GalleryWebPayloadBuilder.toWebAsset(item, previewSrc, lottieJson)
@@ -180,7 +161,12 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             mapOf(
                 "type" to "loadingState",
                 "loading" to (status.state == GalleryIndexService.IndexState.INDEXING),
-                "message" to status.message
+                "message" to status.message,
+                "phase" to status.phase,
+                "indexedCount" to status.indexedCount,
+                "metadataCount" to status.metadataCount,
+                "currentPath" to status.currentPath,
+                "fallbackSource" to status.fallbackSource
             )
         )
     }
@@ -191,7 +177,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             ?: return
 
         ApplicationManager.getApplication().executeOnPooledThread {
-            val info = MediaMetadataExtractor.infoFor(item)
+            val info = item.mediaInfo ?: MediaMetadataExtractor.infoFor(item)
             sendToWeb(
                 mapOf(
                     "type" to "imageInfo",
@@ -244,25 +230,6 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             logger.warn("Failed to open media with default app: $absPath", error)
             ApplicationManager.getApplication().invokeLater { RevealFileAction.openFile(file) }
         }
-    }
-
-    private fun openWithChooser(absPath: String) {
-        val file = File(absPath)
-        if (!file.exists()) return
-        try {
-            if (isWindows()) {
-                ProcessBuilder("rundll32.exe", "shell32.dll,OpenAs_RunDLL", file.absolutePath).start()
-            } else {
-                openWithDefaultApp(absPath)
-            }
-        } catch (error: Throwable) {
-            logger.warn("Failed to open media chooser: $absPath", error)
-            openWithDefaultApp(absPath)
-        }
-    }
-
-    private fun isWindows(): Boolean {
-        return System.getProperty("os.name").orEmpty().lowercase().contains("win")
     }
 
     private fun prepareWebUi(query: JBCefJSQuery): Path {

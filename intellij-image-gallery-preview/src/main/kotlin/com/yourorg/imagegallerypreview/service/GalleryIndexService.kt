@@ -13,6 +13,7 @@ import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileContentChangeEvent
 import com.intellij.openapi.vfs.newvfs.events.VFileCreateEvent
 import com.intellij.openapi.vfs.newvfs.events.VFileDeleteEvent
+import com.yourorg.imagegallerypreview.metadata.MediaMetadataExtractor
 import com.yourorg.imagegallerypreview.model.GalleryAssetItem
 import com.yourorg.imagegallerypreview.scanner.ProjectAssetScanner
 import com.yourorg.imagegallerypreview.util.AssetFileUtil
@@ -34,6 +35,11 @@ class GalleryIndexService(private val project: Project) : Disposable {
     data class IndexStatus(
         val state: IndexState,
         val message: String,
+        val phase: String = "idle",
+        val indexedCount: Int = 0,
+        val metadataCount: Int = 0,
+        val currentPath: String? = null,
+        val fallbackSource: String? = null,
         val timestampMillis: Long = System.currentTimeMillis(),
         val error: Throwable? = null
     )
@@ -115,23 +121,45 @@ class GalleryIndexService(private val project: Project) : Disposable {
     }
 
     private fun runRefresh(afterRefreshCallbacks: List<() -> Unit>) {
-        publishStatus(IndexStatus(IndexState.INDEXING, "Indexing..."))
+        publishStatus(
+            IndexStatus(
+                state = IndexState.INDEXING,
+                message = "Discovering assets...",
+                phase = "discovering"
+            )
+        )
 
         ApplicationManager.getApplication().executeOnPooledThread {
             val started = System.currentTimeMillis()
             val callbackQueue = afterRefreshCallbacks.toMutableList()
 
             try {
-                val items = scanner.scan()
+                val discoveredItems = scanner.scan()
+                val items = enrichItems(discoveredItems)
                 cache = items
                 duplicateIndex = buildDuplicateIndex(items)
 
                 publishItems(items)
                 val elapsed = System.currentTimeMillis() - started
-                publishStatus(IndexStatus(IndexState.SUCCESS, "Updated at ${timestampLabel()} (${items.size} items, ${elapsed}ms)"))
+                publishStatus(
+                    IndexStatus(
+                        state = IndexState.SUCCESS,
+                        message = "Updated at ${timestampLabel()} (${items.size} items, ${elapsed}ms)",
+                        phase = "complete",
+                        indexedCount = items.size,
+                        metadataCount = items.size
+                    )
+                )
                 callbackQueue.forEach { invokeOnEdt(it) }
             } catch (error: Throwable) {
-                publishStatus(IndexStatus(IndexState.FAILED, "Failed", error = error))
+                publishStatus(
+                    IndexStatus(
+                        state = IndexState.FAILED,
+                        message = "Failed: ${error.message ?: error.javaClass.simpleName}",
+                        phase = "failed",
+                        error = error
+                    )
+                )
             } finally {
                 refreshRunning.set(false)
                 if (refreshPending.compareAndSet(true, false)) {
@@ -148,6 +176,57 @@ class GalleryIndexService(private val project: Project) : Disposable {
             invokeOnEdt {
                 listener(items)
             }
+        }
+    }
+
+    private fun enrichItems(items: List<GalleryAssetItem>): List<GalleryAssetItem> {
+        if (items.isEmpty()) {
+            publishStatus(
+                IndexStatus(
+                    state = IndexState.SUCCESS,
+                    message = "Updated at ${timestampLabel()} (0 items)",
+                    phase = "complete"
+                )
+            )
+            return emptyList()
+        }
+
+        publishStatus(
+            IndexStatus(
+                state = IndexState.INDEXING,
+                message = "Resolving metadata...",
+                phase = "resolving_metadata",
+                indexedCount = items.size,
+                metadataCount = 0
+            )
+        )
+
+        return items.mapIndexed { index, item ->
+            val metadata = MediaMetadataExtractor.extractFor(item)
+            val processed = index + 1
+            val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
+            val fallbackSource = metadata.info.source
+                .takeUnless { it.contains("MediaInfo", ignoreCase = true) }
+
+            if (processed == 1 || processed == items.size || processed % 10 == 0) {
+                publishStatus(
+                    IndexStatus(
+                        state = IndexState.INDEXING,
+                        message = "Resolving metadata...",
+                        phase = "resolving_metadata",
+                        indexedCount = items.size,
+                        metadataCount = processed,
+                        currentPath = normalizedPath,
+                        fallbackSource = fallbackSource
+                    )
+                )
+            }
+
+            item.copy(
+                durationMillis = metadata.durationMillis ?: item.durationMillis,
+                imageInfo = metadata.imageInfo ?: item.imageInfo,
+                mediaInfo = metadata.info
+            )
         }
     }
 

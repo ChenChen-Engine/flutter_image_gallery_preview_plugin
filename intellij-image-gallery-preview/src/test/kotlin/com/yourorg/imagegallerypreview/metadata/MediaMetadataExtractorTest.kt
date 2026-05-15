@@ -65,4 +65,35 @@ class MediaMetadataExtractorTest {
 
         assertEquals(null, found)
     }
+
+    @Test
+    fun `prefers cmd shell MediaInfo probe before direct executable on Windows`() {
+        val commands = MediaMetadataExtractor.mediaInfoProbeCommands(
+            absPath = "C:/demo/assets/video/intro.mp4",
+            osName = "Windows 11",
+            configuredExecutable = "D:/Tools/MediaInfo/MediaInfo.exe"
+        )
+
+        assertEquals(listOf("cmd", "/c", "mediaInfo", "--output=json", "C:/demo/assets/video/intro.mp4"), commands.first())
+        assertEquals(listOf("D:/Tools/MediaInfo/MediaInfo.exe", "--output=json", "C:/demo/assets/video/intro.mp4"), commands[1])
+    }
+
+    @Test
+    fun `extracts duration millis from metadata rows`() {
+        val info = MediaMetadataInfo(
+            mediaType = "video",
+            source = "MediaInfo",
+            sections = listOf(
+                MetadataSection(
+                    title = "General",
+                    rows = listOf(
+                        MetadataRow("Duration", "1 min 2 s"),
+                        MetadataRow("Format", "MPEG-4")
+                    )
+                )
+            )
+        )
+
+        assertEquals(62_000L, MediaMetadataExtractor.durationMillisFrom(info))
+    }
 }

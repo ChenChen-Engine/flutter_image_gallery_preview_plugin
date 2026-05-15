@@ -1,6 +1,7 @@
 ﻿package com.yourorg.imagegallerypreview.model
 
 import com.yourorg.imagegallerypreview.metadata.ImageMetadataInfo
+import com.yourorg.imagegallerypreview.metadata.MediaMetadataInfo
 import java.util.Locale
 
 data class GalleryAssetItem(
@@ -31,7 +32,8 @@ data class GalleryAssetItem(
     val qualifier: String,
     val mtime: Long,
     val kind: AssetKind,
-    val imageInfo: ImageMetadataInfo? = null
+    val imageInfo: ImageMetadataInfo? = null,
+    val mediaInfo: MediaMetadataInfo? = null
 ) {
     val fileName: String
         get() = absPath.substringAfterLast('\\').substringAfterLast('/')

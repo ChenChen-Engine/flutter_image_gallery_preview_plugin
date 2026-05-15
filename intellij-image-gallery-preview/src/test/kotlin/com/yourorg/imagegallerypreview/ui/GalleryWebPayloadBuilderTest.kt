@@ -1,10 +1,14 @@
 package com.yourorg.imagegallerypreview.ui
 
+import com.yourorg.imagegallerypreview.metadata.MediaMetadataInfo
+import com.yourorg.imagegallerypreview.metadata.MetadataRow
+import com.yourorg.imagegallerypreview.metadata.MetadataSection
 import com.yourorg.imagegallerypreview.model.AssetKind
 import com.yourorg.imagegallerypreview.model.GalleryAssetItem
 import com.yourorg.imagegallerypreview.model.SourceType
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 
 class GalleryWebPayloadBuilderTest {
 
@@ -44,7 +48,41 @@ class GalleryWebPayloadBuilderTest {
         assertEquals(false, webItem.isAnimated)
     }
 
-    private fun asset(formatFamily: String, absPath: String, mediaType: String = "image"): GalleryAssetItem {
+    @Test
+    fun `carries eager media info and fixed duration label for media items`() {
+        val mediaInfo = MediaMetadataInfo(
+            mediaType = "audio",
+            source = "MediaInfo",
+            sections = listOf(
+                MetadataSection(
+                    title = "General",
+                    rows = listOf(MetadataRow("Duration", "2 min 5 s"))
+                )
+            )
+        )
+        val item = asset(
+            formatFamily = "mp3",
+            absPath = "C:/demo/assets/audio/click.mp3",
+            mediaType = "audio",
+            durationMillis = 125_000L,
+            mediaInfo = mediaInfo
+        )
+
+        val webItem = GalleryWebPayloadBuilder.toWebAsset(item, null)
+
+        assertEquals("audio", webItem.renderKind)
+        assertEquals("2:05", webItem.durationLabel)
+        assertNotNull(webItem.mediaInfo)
+        assertEquals("MediaInfo", webItem.mediaInfo.source)
+    }
+
+    private fun asset(
+        formatFamily: String,
+        absPath: String,
+        mediaType: String = "image",
+        durationMillis: Long? = null,
+        mediaInfo: MediaMetadataInfo? = null
+    ): GalleryAssetItem {
         return GalleryAssetItem(
             sourceType = SourceType.ANDROID_RES,
             platform = "android",
@@ -63,7 +101,7 @@ class GalleryWebPayloadBuilderTest {
             formatFamily = formatFamily,
             isAnimated = formatFamily == "lottie" || formatFamily == "gif",
             mediaType = mediaType,
-            durationMillis = null,
+            durationMillis = durationMillis,
             resourceRootPath = "C:/demo/app/src/main/res/drawable",
             absPath = absPath,
             relPath = "app/src/main/res/drawable/icon.png",
@@ -72,7 +110,8 @@ class GalleryWebPayloadBuilderTest {
             height = 24,
             qualifier = "",
             mtime = 1L,
-            kind = AssetKind.fromFormatFamily(formatFamily)
+            kind = AssetKind.fromFormatFamily(formatFamily),
+            mediaInfo = mediaInfo
         )
     }
 }

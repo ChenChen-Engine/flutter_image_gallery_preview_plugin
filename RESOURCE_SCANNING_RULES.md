@@ -7,10 +7,12 @@ This repository contains two independent plugins (IntelliJ + VSCode) with aligne
 - Scan all module paths matching:
   - `**/src/*/res/drawable*`
   - `**/src/*/res/mipmap*`
+  - `**/src/*/res/raw*`
 - Keep same-name resources from different modules (no overwrite by name).
 - Copy token:
   - `R.drawable.<name>` for `drawable*`
   - `R.mipmap.<name>` for `mipmap*`
+  - `R.raw.<name>` for `raw*`
 - Extract qualifier from folder suffix (`drawable-xxhdpi` => `xxhdpi`).
 
 ## Flutter resources
@@ -36,7 +38,9 @@ This repository contains two independent plugins (IntelliJ + VSCode) with aligne
 
 Dynamic filters show only discovered families. Supported family set:
 
-- `png`, `jpg`, `jpeg`, `webp`, `gif`, `bmp`, `svg`, `lottie`, `vector_xml`, `pdf`, `heic`, `heif`, `apng`, `avif`, `ico`, `xml`
+- Images: `png`, `jpg`, `jpeg`, `webp`, `gif`, `bmp`, `svg`, `lottie`, `vector_xml`, `pdf`, `heic`, `heif`, `apng`, `avif`, `ico`, `xml`
+- Audio: `mp3`, `m4a`, `aac`, `wav`, `ogg`, `opus`, `flac`, `amr`, `mid`, `midi`, `caf`, `wma`, `aiff`, `aif`, `alac`, `mka`
+- Video: `mp4`, `m4v`, `mov`, `webm`, `mkv`, `avi`, `3gp`, `3gpp`, `mpeg`, `mpg`, `ts`, `m2ts`, `wmv`, `flv`
 
 Lottie recognition rule:
 
@@ -53,6 +57,8 @@ Both plugins align on:
 - `copyToken`
 - `md5`
 - `formatFamily`
+- `mediaType`
+- `durationMillis`
 - `absPath`
 - `relPath`
 - `format`
@@ -62,6 +68,20 @@ Both plugins align on:
 - `mtime`
 - `kind`
 - `imageInfo` (`width`, `height`, `colorSpace`, `chromaSubsampling`, `bitDepth`, `compressionMode`, `streamSize`, `fileSize`, `format`, `absPath`)
+- `mediaInfo` (`source`, `sections[]`, optional install hint)
+
+## Metadata enrichment
+
+- Discovery stays resource-root scoped.
+- Metadata enrichment happens after discovery and before publish.
+- Windows MediaInfo CLI is attempted first with `cmd /c mediaInfo --output=json <file>`.
+- If MediaInfo CLI is unavailable or incomplete, hosts merge built-in/native metadata and `ffprobe`.
+- `requestMediaInfo` remains a defensive fallback only when indexed metadata is missing.
+
+## Loading diagnostics
+
+- IntelliJ publishes `phase`, `indexedCount`, `metadataCount`, `currentPath`, and optional `fallbackSource`.
+- VSCode publishes worker `phase`, `count`, `total`, `currentPath`, and heartbeat diagnostics, and mirrors them to an OutputChannel.
 
 ## Duplicate handling
 
@@ -70,6 +90,8 @@ Both plugins align on:
 - New file is checked immediately after creation (post-create interception pattern).
 - If duplicate is found:
   - Prompt with:
+    - `强制添加新图`
+    - `删除新图并定位旧图`
     - `强制添加新图`
     - `删除新图并定位旧图`
   - If multiple existing duplicates are found, user selects one target path before opening.

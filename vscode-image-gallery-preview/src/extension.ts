@@ -1,39 +1,29 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { Worker } from 'worker_threads';
-import exifReader from 'exif-reader';
-import sharp from 'sharp';
-import {
-  GalleryAssetItem,
-  ImageInfo,
-  MediaMetadataInfo,
-  MediaType,
-  MetadataRow,
-  MetadataSection,
-  PlatformType
-} from './shared/types';
-import { findMediaInfoExecutable } from './mediaInfoTool';
+import { extractMediaInfo, seedMediaInfoCache } from './mediaMetadata';
+import { ScanWorkerMessage, ScanWorkerProgress } from './scanWorker';
+import { GalleryAssetItem, MediaMetadataInfo, PlatformType } from './shared/types';
 import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
-const execFileAsync = promisify(execFile);
-const MEDIAINFO_DOWNLOAD_URL = 'https://mediaarea.net/en/MediaInfo/Download/Windows';
 const SCAN_TIMEOUT_MS = 120_000;
 const SCAN_STALE_MS = 12_000;
 
-interface ScanWorkerMessage {
-  type?: 'progress' | 'assets' | 'done' | 'error';
-  items?: GalleryAssetItem[];
+export interface LoadingStateMessage {
+  count?: number;
+  currentPath?: string | null;
+  heartbeat?: boolean;
+  loading: boolean;
+  message: string;
+  phase?: string;
   total?: number;
-  message?: string;
-  error?: string;
+  type: 'loadingState';
 }
 
 function scanWorkspaceInWorker(
   roots: string[],
-  onProgress: (message: string) => void,
+  onProgress: (progress: ScanWorkerProgress) => void,
   onPartial: (items: GalleryAssetItem[], done: boolean) => void
 ): Promise<GalleryAssetItem[]> {
   if (!roots.length) return Promise.resolve([]);
@@ -43,15 +33,23 @@ function scanWorkspaceInWorker(
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
     let staleTimer: NodeJS.Timeout | undefined;
+
+    const worker = new Worker(workerPath, { workerData: { roots } });
+
     const resetStaleTimer = () => {
       if (staleTimer) clearTimeout(staleTimer);
       staleTimer = setTimeout(() => {
-        onProgress('Indexing is taking longer than expected; scanned results will appear incrementally.');
+        onProgress({
+          phase: 'enrich',
+          count: 0,
+          total: 0,
+          currentPath: null,
+          heartbeat: true,
+          message: 'Indexing is taking longer than expected; worker heartbeat is still active.'
+        });
       }, SCAN_STALE_MS);
     };
-    const worker = new Worker(workerPath, {
-      workerData: { roots }
-    });
+
     const finish = (complete: () => void) => {
       if (settled) return;
       settled = true;
@@ -59,6 +57,7 @@ function scanWorkspaceInWorker(
       if (staleTimer) clearTimeout(staleTimer);
       complete();
     };
+
     timeout = setTimeout(() => {
       finish(() => reject(new Error(`Indexing timed out after ${SCAN_TIMEOUT_MS / 1000}s`)));
       void worker.terminate();
@@ -67,22 +66,22 @@ function scanWorkspaceInWorker(
 
     worker.on('message', (message: ScanWorkerMessage) => {
       resetStaleTimer();
-      if (message?.type === 'progress') {
-        onProgress(message.message || 'Indexing assets...');
+      if (message.type === 'progress' && message.progress) {
+        onProgress(message.progress);
         return;
       }
-      if (message?.type === 'assets') {
+      if (message.type === 'assets') {
         onPartial(Array.isArray(message.items) ? message.items : [], false);
         return;
       }
-      if (message?.type === 'done') {
+      if (message.type === 'done') {
         const items = Array.isArray(message.items) ? message.items : [];
         onPartial(items, true);
         finish(() => resolve(items));
         void worker.terminate();
         return;
       }
-      if (message?.type === 'error' || message?.error) {
+      if (message.type === 'error' || message.error) {
         finish(() => reject(new Error(message.error || 'Index worker failed')));
         void worker.terminate();
       }
@@ -103,15 +102,16 @@ function scanWorkspaceInWorker(
 class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'imageGalleryPreview.view';
 
-  private view?: vscode.WebviewView;
-  private watchers: vscode.FileSystemWatcher[] = [];
+  private afterRefreshQueue: Array<(items: GalleryAssetItem[]) => Promise<void> | void> = [];
   private cachedItems: GalleryAssetItem[] = [];
   private duplicateIndex: Map<PlatformType, Map<string, GalleryAssetItem[]>> = new Map();
   private infoCache = new Map<string, MediaMetadataInfo>();
-  private refreshTask: Promise<void> | null = null;
+  private readonly output = vscode.window.createOutputChannel('Image Gallery Preview');
   private refreshPending = false;
-  private afterRefreshQueue: Array<(items: GalleryAssetItem[]) => Promise<void> | void> = [];
+  private refreshTask: Promise<void> | null = null;
   private started = false;
+  private view?: vscode.WebviewView;
+  private watchers: vscode.FileSystemWatcher[] = [];
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -138,9 +138,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   }
 
   async refresh(afterRefresh?: (items: GalleryAssetItem[]) => Promise<void> | void): Promise<void> {
-    if (afterRefresh) {
-      this.afterRefreshQueue.push(afterRefresh);
-    }
+    if (afterRefresh) this.afterRefreshQueue.push(afterRefresh);
 
     if (this.refreshTask) {
       this.refreshPending = true;
@@ -163,6 +161,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   dispose(): void {
     this.watchers.forEach((watcher) => watcher.dispose());
     this.watchers = [];
+    this.output.dispose();
   }
 
   private async handleWebMessage(message: any): Promise<void> {
@@ -185,11 +184,6 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    if (message?.type === 'open' && typeof message.absPath === 'string') {
-      await openResourceByPath(message.absPath);
-      return;
-    }
-
     if (message?.type === 'reveal' && typeof message.absPath === 'string') {
       await revealResourceByPath(message.absPath);
       return;
@@ -201,9 +195,9 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     }
 
     if (message?.type === 'copy' && typeof message.value === 'string') {
-      const label = typeof message.label === 'string' ? message.label : '内容';
+      const label = typeof message.label === 'string' ? message.label : 'content';
       await vscode.env.clipboard.writeText(message.value);
-      vscode.window.setStatusBarMessage(`已复制${label}: ${message.value}`, 1500);
+      vscode.window.setStatusBarMessage(`Copied ${label}: ${message.value}`, 1500);
       return;
     }
 
@@ -222,11 +216,6 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    if (message?.type === 'openWithChooser' && typeof message.absPath === 'string') {
-      await openWithChooser(message.absPath);
-      return;
-    }
-
     if (message?.type === 'openExternal' && typeof message.url === 'string') {
       await vscode.env.openExternal(vscode.Uri.parse(message.url));
     }
@@ -234,12 +223,14 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
   private async performRefresh(): Promise<void> {
     const started = Date.now();
+    this.output.appendLine('[refresh] starting workspace index');
     await this.postLoadingState(true, 'Indexing assets...');
 
     try {
       if (!vscode.workspace.workspaceFolders?.length) {
         this.cachedItems = [];
         this.duplicateIndex.clear();
+        this.infoCache.clear();
         await this.postAssets();
         await this.postLoadingState(false, '');
         this.afterRefreshQueue = [];
@@ -253,32 +244,38 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
         relPath: normalizePath(item.relPath),
         resourceRootPath: normalizePath(item.resourceRootPath)
       }));
+
       const publishPartial = async (rawItems: GalleryAssetItem[], done: boolean) => {
         const partialItems = normalizeItems(rawItems);
         this.cachedItems = partialItems;
         this.duplicateIndex = this.buildDuplicateIndex(partialItems);
+        this.infoCache = primeInfoCacheFromItems(partialItems);
         await this.postAssets();
         if (!done) {
-          await this.postLoadingState(false, `Indexed ${partialItems.length} assets so far...`);
+          await this.postLoadingState(true, `Indexed ${partialItems.length} assets so far...`);
         }
       };
+
       const scannedItems = await scanWorkspaceInWorker(
         roots,
-        (message) => {
-          const stale = message.includes('taking longer');
-          void this.postLoadingState(!stale, message);
+        (progress) => {
+          this.output.appendLine(formatWorkerDiagnostic(progress));
+          void this.postLoadingState(progress);
         },
         (partialItems, done) => {
           void publishPartial(partialItems, done);
         }
       );
-      const items = normalizeItems(scannedItems);
 
+      const items = normalizeItems(scannedItems);
       this.cachedItems = items;
       this.duplicateIndex = this.buildDuplicateIndex(items);
+      this.infoCache = primeInfoCacheFromItems(items);
 
       await this.postAssets();
-      console.info(`[Image Gallery Preview] Indexed ${items.length} assets in ${Date.now() - started}ms`);
+      const elapsed = Date.now() - started;
+      console.info(`[Image Gallery Preview] Indexed ${items.length} assets in ${elapsed}ms`);
+      this.output.appendLine(`[refresh] indexed ${items.length} assets in ${elapsed}ms`);
       await this.postLoadingState(false, `Updated ${new Date().toLocaleTimeString()}`);
 
       const callbacks = this.afterRefreshQueue.splice(0, this.afterRefreshQueue.length);
@@ -288,6 +285,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     } catch (error) {
       this.afterRefreshQueue = [];
       console.error('[Image Gallery Preview] Failed to index assets', error);
+      this.output.appendLine(`[refresh] failed: ${error instanceof Error ? error.message : String(error)}`);
       await this.postLoadingState(false, `Failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -301,15 +299,20 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       const lottieJson = item.formatFamily === 'lottie' ? readSmallTextFile(normalizedAbsPath) : null;
       return {
         ...toWebviewAssetItem(item, previewUri, lottieJson),
-        mediaInfo: this.infoCache.get(normalizedAbsPath)
+        mediaInfo: item.mediaInfo ?? this.infoCache.get(normalizedAbsPath)
       };
     });
 
     await this.view.webview.postMessage({ type: 'assets', items: serialized });
   }
 
-  private async postLoadingState(loading: boolean, message: string): Promise<void> {
-    await this.view?.webview.postMessage({ type: 'loadingState', loading, message });
+  private async postLoadingState(progress: ScanWorkerProgress): Promise<void>;
+  private async postLoadingState(loading: boolean, message: string): Promise<void>;
+  private async postLoadingState(progressOrLoading: ScanWorkerProgress | boolean, message = ''): Promise<void> {
+    const payload = typeof progressOrLoading === 'boolean'
+      ? ({ type: 'loadingState', loading: progressOrLoading, message } satisfies LoadingStateMessage)
+      : toLoadingStateMessage(progressOrLoading);
+    await this.view?.webview.postMessage(payload);
   }
 
   private buildDuplicateIndex(items: GalleryAssetItem[]): Map<PlatformType, Map<string, GalleryAssetItem[]>> {
@@ -330,14 +333,12 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private async handleCreatedFile(fsPath: string, items: GalleryAssetItem[]): Promise<void> {
     const absPath = normalizePath(fsPath);
     const createdItem = items.find((item) => normalizePath(item.absPath) === absPath);
-    if (!createdItem) return;
-    if (createdItem.mediaType !== 'image' || !createdItem.resourceRootPath || !createdItem.md5) return;
+    if (!createdItem || createdItem.mediaType !== 'image' || !createdItem.resourceRootPath || !createdItem.md5) return;
 
     const platformMap = this.duplicateIndex.get(createdItem.platform);
     if (!platformMap) return;
 
-    const sameMd5 = platformMap.get(createdItem.md5) ?? [];
-    const duplicates = sameMd5.filter((item) => normalizePath(item.absPath) !== absPath);
+    const duplicates = (platformMap.get(createdItem.md5) ?? []).filter((item) => normalizePath(item.absPath) !== absPath);
     if (duplicates.length === 0) return;
 
     let selected = duplicates[0];
@@ -349,7 +350,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
           item
         })),
         {
-          title: '检测到多个重复图片，请选择要定位的旧图',
+          title: 'Choose the existing duplicate to reveal',
           canPickMany: false,
           ignoreFocusOut: true
         }
@@ -361,23 +362,23 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
     const choice = await vscode.window.showWarningMessage(
       [
-        `检测到重复图片（同平台 ${createdItem.platform}）`,
-        `新图：${absPath}`,
-        `命中：${selected.absPath}`
+        `Detected duplicate image on platform ${createdItem.platform}.`,
+        `New: ${absPath}`,
+        `Existing: ${selected.absPath}`
       ].join('\n'),
       { modal: true },
-      '强制添加新图',
-      '删除新图并定位旧图'
+      'Keep new file',
+      'Delete new file and reveal existing'
     );
 
-    if (choice !== '删除新图并定位旧图') return;
+    if (choice !== 'Delete new file and reveal existing') return;
 
     try {
       await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { recursive: false, useTrash: false });
       await revealResourceByPath(selected.absPath);
       await this.refresh();
     } catch {
-      await vscode.window.showErrorMessage(`无法删除新图片，请手动处理：${absPath}`);
+      await vscode.window.showErrorMessage(`Failed to delete duplicate file: ${absPath}`);
     }
   }
 
@@ -412,7 +413,6 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       };
       watcher.onDidChange(onChange);
       watcher.onDidDelete(onChange);
-
       this.watchers.push(watcher);
     }
   }
@@ -423,6 +423,11 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     if (cached) return cached;
 
     const item = this.cachedItems.find((entry) => normalizePath(entry.absPath) === normalized);
+    if (item?.mediaInfo) {
+      this.infoCache.set(normalized, item.mediaInfo);
+      return item.mediaInfo;
+    }
+
     const info = await extractMediaInfo(normalized, item);
     this.infoCache.set(normalized, info);
     return info;
@@ -442,9 +447,8 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
-function previewUriForItem(webview: vscode.Webview, item: GalleryAssetItem): string | null {
-  const renderable = item.mediaType === 'audio' || item.mediaType === 'video' ||
-    ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'apng', 'avif', 'ico', 'lottie'].includes(item.formatFamily);
+export function previewUriForItem(webview: vscode.Webview, item: GalleryAssetItem): string | null {
+  const renderable = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'apng', 'avif', 'ico', 'lottie'].includes(item.formatFamily);
   if (!renderable) return null;
   return webview.asWebviewUri(vscode.Uri.file(item.absPath)).toString();
 }
@@ -463,286 +467,28 @@ function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, '/');
 }
 
-function safeStat(absPath: string): fs.Stats | null {
-  try {
-    return fs.statSync(absPath);
-  } catch {
-    return null;
-  }
+export function primeInfoCacheFromItems(items: GalleryAssetItem[]): Map<string, MediaMetadataInfo> {
+  return seedMediaInfoCache(items);
 }
 
-function readableBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown';
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
-  let value = bytes;
-  let unitIndex = -1;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  return `${value.toFixed(2)} ${units[unitIndex]}`;
-}
-
-function metadataRow(label: string, value: unknown): MetadataRow {
+export function toLoadingStateMessage(progress: ScanWorkerProgress): LoadingStateMessage {
+  const currentName = progress.currentPath ? progress.currentPath.split('/').pop() || progress.currentPath : 'workspace';
   return {
-    label,
-    value: value == null || value === '' ? 'Unknown' : String(value)
+    type: 'loadingState',
+    loading: progress.phase !== 'done',
+    message: progress.message || `${progress.phase} ${progress.count}/${progress.total}: ${currentName}`,
+    phase: progress.phase,
+    count: progress.count,
+    total: progress.total,
+    currentPath: progress.currentPath,
+    heartbeat: progress.heartbeat
   };
 }
 
-function installHint() {
-  return {
-    text: '安装 MediaInfo CLI 可解析更多数据',
-    actionLabel: '下载 CLI',
-    url: MEDIAINFO_DOWNLOAD_URL
-  };
-}
-
-async function extractMediaInfo(absPath: string, item?: GalleryAssetItem): Promise<MediaMetadataInfo> {
-  const mediaType = item?.mediaType ?? mediaTypeFromPath(absPath);
-  if (mediaType === 'image') {
-    return imageInfoToMediaInfo(await extractImageInfo(absPath));
-  }
-
-  const mediaInfo = await tryMediaInfo(absPath, mediaType);
-  if (mediaInfo) return mediaInfo;
-
-  const ffprobeInfo = await tryFfprobe(absPath, mediaType);
-  if (ffprobeInfo) return ffprobeInfo;
-
-  return fallbackMediaInfo(absPath, mediaType, item);
-}
-
-function imageInfoToMediaInfo(info: ImageInfo): MediaMetadataInfo {
-  return {
-    mediaType: 'image',
-    source: 'Built-in',
-    sections: [
-      {
-        title: 'Image',
-        rows: [
-          metadataRow('width', info.width),
-          metadataRow('height', info.height),
-          metadataRow('color Space', info.colorSpace),
-          metadataRow('chroma subsampling', info.chromaSubsampling),
-          metadataRow('bit depth', info.bitDepth),
-          metadataRow('compression mode', info.compressionMode),
-          metadataRow('stream size', info.streamSize),
-          metadataRow('file size', info.fileSize),
-          metadataRow('format', info.format),
-          metadataRow('abs path', info.absPath)
-        ]
-      }
-    ]
-  };
-}
-
-async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<MediaMetadataInfo | null> {
-  const executable = findMediaInfoExecutable();
-  if (!executable) return null;
-  try {
-    const { stdout } = await execFileAsync(executable, ['--Output=JSON', absPath], { windowsHide: true, timeout: 8000 });
-    const parsed = JSON.parse(stdout);
-    const tracks = Array.isArray(parsed?.media?.track) ? parsed.media.track : [];
-    const sections = tracks
-      .map((track: Record<string, unknown>) => mediaInfoTrackToSection(track))
-      .filter((section: MetadataSection) => section.rows.length > 0);
-    if (!sections.length) return null;
-    return { mediaType, source: `MediaInfo (${executable})`, sections };
-  } catch {
-    return null;
-  }
-}
-
-function mediaInfoTrackToSection(track: Record<string, unknown>): MetadataSection {
-  const title = String(track['@type'] ?? track.Type ?? 'General');
-  const rows = Object.entries(track)
-    .filter(([key, value]) => !key.startsWith('@') && value != null && typeof value !== 'object')
-    .slice(0, 80)
-    .map(([key, value]) => metadataRow(humanizeKey(key), value));
-  return { title, rows };
-}
-
-async function tryFfprobe(absPath: string, mediaType: MediaType): Promise<MediaMetadataInfo | null> {
-  try {
-    const { stdout } = await execFileAsync(
-      'ffprobe',
-      ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', absPath],
-      { windowsHide: true, timeout: 8000, maxBuffer: 2 * 1024 * 1024 }
-    );
-    const parsed = JSON.parse(stdout);
-    const sections: MetadataSection[] = [];
-    if (parsed.format) {
-      sections.push({
-        title: 'General',
-        rows: [
-          metadataRow('Complete name', absPath),
-          metadataRow('Format', parsed.format.format_long_name ?? parsed.format.format_name),
-          metadataRow('File size', parsed.format.size ? readableBytes(Number(parsed.format.size)) : 'Unknown'),
-          metadataRow('Duration', formatSeconds(parsed.format.duration)),
-          metadataRow('Overall bit rate', parsed.format.bit_rate ? `${Math.round(Number(parsed.format.bit_rate) / 1000)} kb/s` : 'Unknown')
-        ]
-      });
-    }
-    for (const stream of parsed.streams ?? []) {
-      const codecType = stream.codec_type === 'audio' ? 'Audio' : stream.codec_type === 'video' ? 'Video' : null;
-      if (!codecType) continue;
-      sections.push({
-        title: codecType,
-        rows: [
-          metadataRow('Format', stream.codec_long_name ?? stream.codec_name),
-          metadataRow('Codec ID', stream.codec_tag_string),
-          metadataRow('Duration', formatSeconds(stream.duration)),
-          metadataRow('Bit rate', stream.bit_rate ? `${Math.round(Number(stream.bit_rate) / 1000)} kb/s` : 'Unknown'),
-          metadataRow('Width', stream.width ? `${stream.width} pixels` : undefined),
-          metadataRow('Height', stream.height ? `${stream.height} pixels` : undefined),
-          metadataRow('Frame rate', stream.avg_frame_rate),
-          metadataRow('Channel(s)', stream.channels ? `${stream.channels} channels` : undefined),
-          metadataRow('Sampling rate', stream.sample_rate ? `${Number(stream.sample_rate) / 1000} kHz` : undefined),
-          metadataRow('Color space', stream.color_space),
-          metadataRow('Chroma subsampling', stream.chroma_location),
-          metadataRow('Bit depth', stream.bits_per_raw_sample || stream.bits_per_sample)
-        ]
-      });
-    }
-    return sections.length ? { mediaType, source: 'ffprobe', sections } : null;
-  } catch {
-    return null;
-  }
-}
-
-function fallbackMediaInfo(absPath: string, mediaType: MediaType, item?: GalleryAssetItem): MediaMetadataInfo {
-  const stat = safeStat(absPath);
-  const generalRows = [
-    metadataRow('Complete name', normalizePath(absPath)),
-    metadataRow('Format', path.extname(absPath).replace('.', '').toUpperCase() || 'Unknown'),
-    metadataRow('File size', stat ? readableBytes(stat.size) : 'Unknown'),
-    metadataRow('Duration', formatMillis(item?.durationMillis)),
-    metadataRow('Overall bit rate', 'Unknown')
-  ];
-  const streamRows = [
-    metadataRow('Format', path.extname(absPath).replace('.', '').toUpperCase() || 'Unknown'),
-    metadataRow('Duration', formatMillis(item?.durationMillis)),
-    metadataRow('Bit rate', 'Unknown'),
-    metadataRow('Compression mode', 'Unknown'),
-    metadataRow('Stream size', stat ? readableBytes(stat.size) : 'Unknown')
-  ];
-  return {
-    mediaType,
-    source: 'Built-in',
-    sections: [
-      { title: 'General', rows: generalRows },
-      { title: mediaType === 'video' ? 'Video' : 'Audio', rows: streamRows }
-    ],
-    installHint: installHint()
-  };
-}
-
-async function extractImageInfo(absPath: string): Promise<ImageInfo> {
-  const stat = safeStat(absPath);
-  const fileSize = stat ? readableBytes(stat.size) : 'Unknown';
-  const format = path.extname(absPath).replace('.', '').toUpperCase() || 'Unknown';
-
-  const unknown: ImageInfo = {
-    width: 'Unknown',
-    height: 'Unknown',
-    colorSpace: 'Unknown',
-    chromaSubsampling: 'Unknown',
-    bitDepth: 'Unknown',
-    compressionMode: 'Unknown',
-    streamSize: fileSize,
-    fileSize,
-    format,
-    absPath: normalizePath(absPath)
-  };
-
-  if (!stat) return unknown;
-
-  try {
-    const image = sharp(absPath, { failOnError: false });
-    const metadata = await image.metadata();
-
-    let colorSpace: string = metadata.space ? String(metadata.space) : 'Unknown';
-    let chromaSubsampling = metadata.chromaSubsampling || 'Unknown';
-    let bitDepth: string = metadata.depth ? String(metadata.depth) : 'Unknown';
-    let compressionMode = metadata.compression || 'Unknown';
-
-    if (metadata.exif) {
-      try {
-        const exif = exifReader(metadata.exif as Buffer) as any;
-        colorSpace = colorSpace !== 'Unknown' ? colorSpace : String(exif?.image?.ColorSpace ?? 'Unknown');
-        chromaSubsampling =
-          chromaSubsampling !== 'Unknown'
-            ? chromaSubsampling
-            : String(exif?.image?.YCbCrSubSampling ?? 'Unknown');
-        bitDepth =
-          bitDepth !== 'Unknown'
-            ? bitDepth
-            : String(exif?.image?.BitsPerSample ?? exif?.photo?.BitsPerSample ?? 'Unknown');
-        compressionMode =
-          compressionMode !== 'Unknown'
-            ? compressionMode
-            : String(exif?.image?.Compression ?? 'Unknown');
-      } catch {
-        // ignore malformed EXIF
-      }
-    }
-
-    const streamSize = metadata.size != null ? readableBytes(metadata.size) : fileSize;
-
-    return {
-      width: metadata.width != null ? String(metadata.width) : 'Unknown',
-      height: metadata.height != null ? String(metadata.height) : 'Unknown',
-      colorSpace,
-      chromaSubsampling,
-      bitDepth,
-      compressionMode,
-      streamSize,
-      fileSize,
-      format,
-      absPath: normalizePath(absPath)
-    };
-  } catch {
-    return unknown;
-  }
-}
-
-function mediaTypeFromPath(absPath: string): MediaType {
-  const extension = path.extname(absPath).replace('.', '').toLowerCase();
-  if (['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'amr', 'mid', 'midi', 'caf', 'wma', 'aiff', 'aif', 'alac', 'mka'].includes(extension)) return 'audio';
-  if (['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', '3gp', '3gpp', 'mpeg', 'mpg', 'ts', 'm2ts', 'wmv', 'flv'].includes(extension)) return 'video';
-  return 'image';
-}
-
-function formatMillis(value: number | null | undefined): string {
-  if (!value || value <= 0) return 'Unknown';
-  return formatSeconds(value / 1000);
-}
-
-function formatSeconds(value: unknown): string {
-  const secondsValue = Number(value);
-  if (!Number.isFinite(secondsValue) || secondsValue <= 0) return 'Unknown';
-  const totalMs = Math.round(secondsValue * 1000);
-  const totalSeconds = Math.floor(totalMs / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const millis = totalMs % 1000;
-  const base = hours > 0
-    ? `${hours} h ${minutes} min ${seconds} s`
-    : minutes > 0
-      ? `${minutes} min ${seconds} s`
-      : `${seconds} s`;
-  return millis > 0 ? `${base} ${millis} ms` : base;
-}
-
-function humanizeKey(key: string): string {
-  return key
-    .replace(/_String\d*$/i, '')
-    .replace(/_/g, ' ')
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .trim();
+export function formatWorkerDiagnostic(progress: ScanWorkerProgress): string {
+  const suffix = progress.currentPath ? ` ${progress.currentPath}` : '';
+  const marker = progress.heartbeat ? 'heartbeat' : 'progress';
+  return `[worker:${marker}] ${progress.phase} ${progress.count}/${progress.total}${suffix}`;
 }
 
 function isInterestingFsPath(fsPath: string): boolean {
@@ -764,10 +510,7 @@ function hasIgnoredSegment(normalizedPath: string): boolean {
 }
 
 async function openResourceByPath(absPath: string): Promise<void> {
-  const uri = vscode.Uri.file(absPath);
-  await vscode.commands.executeCommand('vscode.open', uri, {
-    preview: false
-  });
+  await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(absPath), { preview: false });
 }
 
 async function revealResourceByPath(absPath: string): Promise<void> {
@@ -777,19 +520,6 @@ async function revealResourceByPath(absPath: string): Promise<void> {
 
 async function openWithDefaultApp(absPath: string): Promise<void> {
   await vscode.env.openExternal(vscode.Uri.file(absPath));
-}
-
-async function openWithChooser(absPath: string): Promise<void> {
-  if (process.platform === 'win32') {
-    try {
-      execFile('rundll32.exe', ['shell32.dll,OpenAs_RunDLL', absPath], { windowsHide: true }, () => undefined);
-      return;
-    } catch {
-      await openWithDefaultApp(absPath);
-      return;
-    }
-  }
-  await openWithDefaultApp(absPath);
 }
 
 export function activate(context: vscode.ExtensionContext): void {

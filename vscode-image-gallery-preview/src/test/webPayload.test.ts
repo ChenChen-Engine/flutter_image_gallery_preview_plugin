@@ -11,6 +11,18 @@ suite('web payload', () => {
     assert.strictEqual(toWebviewAssetItem(asset('mp4', 'video'), 'file:///intro.mp4').renderKind, 'video');
   });
 
+  test('keeps audio and video renderable without preview URIs', () => {
+    assert.strictEqual(toWebviewAssetItem(asset('mp3', 'audio'), null).renderKind, 'audio');
+    assert.strictEqual(toWebviewAssetItem(asset('mp4', 'video'), null).renderKind, 'video');
+    assert.strictEqual(toWebviewAssetItem(asset('png'), null).renderKind, 'placeholder');
+    assert.strictEqual(toWebviewAssetItem(asset('lottie'), null).renderKind, 'lottie');
+  });
+
+  test('preserves duration labels for indexed audio and video items', () => {
+    assert.strictEqual(toWebviewAssetItem(asset('mp3', 'audio', 124_000), null).durationLabel, '2:04');
+    assert.strictEqual(toWebviewAssetItem(asset('mp4', 'video', 65_000), null).durationLabel, '1:05');
+  });
+
   test('keeps host computed copy token and grouping fields', () => {
     const webItem = toWebviewAssetItem(asset('png'), 'file:///icon.png');
 
@@ -29,7 +41,11 @@ suite('web payload', () => {
   });
 });
 
-function asset(formatFamily: GalleryAssetItem['formatFamily'], mediaType: GalleryAssetItem['mediaType'] = 'image'): GalleryAssetItem {
+function asset(
+  formatFamily: GalleryAssetItem['formatFamily'],
+  mediaType: GalleryAssetItem['mediaType'] = 'image',
+  durationMillis: number | null = null
+): GalleryAssetItem {
   return {
     sourceType: 'android_res',
     platform: 'android',
@@ -48,7 +64,7 @@ function asset(formatFamily: GalleryAssetItem['formatFamily'], mediaType: Galler
     formatFamily,
     isAnimated: formatFamily === 'lottie' || formatFamily === 'gif',
     mediaType,
-    durationMillis: null,
+    durationMillis,
     resourceRootPath: 'C:/demo/app/src/main/res/drawable',
     absPath: 'C:/demo/app/src/main/res/drawable/icon.png',
     relPath: 'app/src/main/res/drawable/icon.png',

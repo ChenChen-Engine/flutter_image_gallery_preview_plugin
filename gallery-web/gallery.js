@@ -48,22 +48,13 @@
     sentinel: document.getElementById('loadMoreSentinel'),
     loading: document.getElementById('loadingOverlay'),
     loadingMessage: document.getElementById('loadingMessage'),
+    loadingPhase: document.getElementById('loadingPhase'),
+    loadingCounts: document.getElementById('loadingCounts'),
+    loadingFallback: document.getElementById('loadingFallback'),
+    loadingPath: document.getElementById('loadingPath'),
     toast: document.getElementById('toast'),
     modal: document.getElementById('infoModal'),
     infoContent: document.getElementById('infoContent'),
-    videoModal: document.getElementById('videoModal'),
-    videoPlayer: document.getElementById('videoPlayer'),
-    videoTitle: document.getElementById('videoTitle'),
-    videoCenterButton: document.getElementById('videoCenterButton'),
-    videoProgressTrack: document.getElementById('videoProgressTrack'),
-    videoProgressFill: document.getElementById('videoProgressFill'),
-    videoTimeLabel: document.getElementById('videoTimeLabel'),
-    videoRateSelect: document.getElementById('videoRateSelect'),
-    unsupportedModal: document.getElementById('unsupportedModal'),
-    unsupportedMessage: document.getElementById('unsupportedMessage'),
-    openDefaultButton: document.getElementById('openDefaultButton'),
-    openChooserButton: document.getElementById('openChooserButton'),
-    showInSystemButton: document.getElementById('showInSystemButton')
   };
 
   const contextMenu = document.createElement('div');
@@ -94,13 +85,7 @@
     animationUpdateTimer: 0,
     filterTimer: 0,
     scrollTimer: 0,
-    toastTimer: 0,
-    currentAudioController: null,
-    unsupportedItem: null,
-    videoDialogItem: null,
-    videoProgressDragging: false,
-    videoOpenToken: 0,
-    videoErrorSuppressed: false
+    toastTimer: 0
   };
 
   function loadCollapsedKeys() {
@@ -247,11 +232,38 @@
     return probe.canPlayType(mime) !== '';
   }
 
-  function setLoading(loading, message = 'Indexing assets...') {
+  function setLoading(loading, message = 'Indexing assets...', details = {}) {
     state.loading = !!loading;
     elements.refresh.disabled = state.loading;
     elements.loading.classList.toggle('visible', state.loading);
     elements.loadingMessage.textContent = message || 'Indexing assets...';
+    renderLoadingDetails(details);
+  }
+
+  function renderLoadingDetails(details = {}) {
+    const phase = details.phase ? `Phase: ${String(details.phase).replaceAll('_', ' ')}` : '';
+    const indexedCount = Number.isFinite(details.indexedCount) ? details.indexedCount : null;
+    const metadataCount = Number.isFinite(details.metadataCount) ? details.metadataCount : null;
+    const count = Number.isFinite(details.count) ? details.count : null;
+    const total = Number.isFinite(details.total) ? details.total : null;
+    const counts = indexedCount != null || metadataCount != null
+      ? `Indexed: ${indexedCount || 0} | Metadata: ${metadataCount || 0}`
+      : count != null || total != null
+        ? `Progress: ${count || 0}${total != null ? ` / ${total}` : ''}`
+        : '';
+    const fallbackLabel = details.fallbackSource || details.heartbeat;
+    const fallback = fallbackLabel ? `Detail: ${fallbackLabel}` : '';
+    const currentPath = details.currentPath ? `Current: ${details.currentPath}` : '';
+
+    elements.loadingPhase.textContent = phase;
+    elements.loadingCounts.textContent = counts;
+    elements.loadingFallback.textContent = fallback;
+    elements.loadingPath.textContent = currentPath;
+
+    elements.loadingPhase.classList.toggle('hidden', !phase);
+    elements.loadingCounts.classList.toggle('hidden', !counts);
+    elements.loadingFallback.classList.toggle('hidden', !fallback);
+    elements.loadingPath.classList.toggle('hidden', !currentPath);
   }
 
   function showToast(message) {
@@ -458,12 +470,11 @@
   }
 
   function updateStatus() {
-    elements.status.textContent = `Visible ${state.filtered.length} / Indexed ${state.all.length} · Showing ${Math.min(state.rendered, state.filtered.length)}`;
+    elements.status.textContent = `Visible ${state.filtered.length} / Indexed ${state.all.length} / Showing ${Math.min(state.rendered, state.filtered.length)}`;
     elements.sentinel.classList.toggle('hidden', state.filtered.length === 0 || state.rendered >= state.filtered.length);
   }
 
   function resetRender() {
-    stopCurrentAudio();
     clearManagedAnimations();
     hideContextMenu();
     state.filtered = filteredItems();
@@ -485,7 +496,6 @@
   }
 
   function renderScanFailure(message) {
-    stopCurrentAudio();
     clearManagedAnimations();
     hideContextMenu();
     elements.root.replaceChildren();
@@ -675,7 +685,7 @@
       showContextMenu(item, event.clientX, event.clientY);
     });
     tile.addEventListener('dblclick', (event) => {
-      if (event.target.closest('.corner-button, .open-button')) return;
+      if (event.target.closest('.corner-button')) return;
       event.preventDefault();
       post('reveal', { absPath: item.absPath });
     });
@@ -729,23 +739,21 @@
     const captionRow = document.createElement('div');
     captionRow.className = 'caption-row';
 
+    const captionWrap = document.createElement('div');
+    captionWrap.className = 'caption-wrap';
+
     const caption = document.createElement('figcaption');
     caption.className = 'caption';
     caption.textContent = fileNameOf(item);
-    caption.title = fileNameOf(item);
+    caption.tabIndex = 0;
 
-    const openButton = document.createElement('button');
-    openButton.type = 'button';
-    openButton.className = 'open-button';
-    openButton.textContent = 'Open';
-    openButton.title = 'Open file';
-    openButton.addEventListener('click', (event) => {
-      event.stopPropagation();
-      post('open', { absPath: item.absPath });
-    });
+    const captionTooltip = document.createElement('div');
+    captionTooltip.className = 'caption-tooltip';
+    captionTooltip.textContent = fileNameOf(item);
 
-    captionRow.appendChild(caption);
-    captionRow.appendChild(openButton);
+    captionWrap.appendChild(caption);
+    captionWrap.appendChild(captionTooltip);
+    captionRow.appendChild(captionWrap);
 
     tile.appendChild(thumbWrap);
     tile.appendChild(captionRow);
@@ -803,38 +811,23 @@
     play.textContent = '▶';
     play.title = '播放 / 停止';
     const duration = durationBadge(item);
+    icon.textContent = 'AUDIO';
+    play.textContent = '▶';
+    play.title = 'Open with default app';
+    play.textContent = '>';
+    play.tabIndex = 0;
+    play.setAttribute('role', 'button');
 
-    let controller = null;
     play.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (item.hostPlayback) {
-        post('playNativeMedia', { absPath: item.absPath, mediaType: 'audio' });
-        return;
-      }
-      if (!item.previewSrc) {
-        showUnsupportedMedia(item, 'audio');
-        return;
-      }
-      if (!canPlayMedia(item, 'audio')) {
-        showUnsupportedMedia(item, 'audio');
-        return;
-      }
-      if (!controller) {
-        controller = createAudioController(item, play, duration);
-      }
-      if (controller.audio.paused) {
-        stopCurrentAudio(controller);
-        controller.audio.play().then(() => {
-          state.currentAudioController = controller;
-          controller.setPlaying(true);
-        }).catch(() => {
-          controller.setPlaying(false);
-          showUnsupportedMedia(item, 'audio');
-        });
-      } else {
-        controller.stop(true);
-      }
+      post('openWithDefaultApp', { absPath: item.absPath });
+    });
+    play.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      event.stopPropagation();
+      post('openWithDefaultApp', { absPath: item.absPath });
     });
 
     wrapper.appendChild(icon);
@@ -850,38 +843,8 @@
     const icon = document.createElement('div');
     icon.className = 'media-icon';
     icon.textContent = '▣';
-    wrapper.appendChild(icon);
-    if (item.previewSrc) {
-      const video = document.createElement('video');
-      video.className = 'thumb-img';
-      video.preload = 'auto';
-      video.muted = true;
-      video.playsInline = true;
-      video.style.visibility = 'hidden';
-      video.src = item.previewSrc;
-      video.addEventListener('loadeddata', () => {
-        wrapper.classList.add('has-video-preview');
-        icon.remove();
-        video.style.visibility = 'visible';
-        try {
-          video.currentTime = Math.min(0.1, Math.max(0, video.duration || 0));
-        } catch {
-          // keep first decoded frame if seeking is unsupported
-        }
-      }, { once: true });
-      video.addEventListener('loadedmetadata', () => {
-        updateDuration(item, duration, video.duration);
-      }, { once: true });
-      video.addEventListener('error', () => {
-        wrapper.classList.remove('has-video-preview');
-        video.style.visibility = 'hidden';
-        if (!wrapper.contains(icon)) wrapper.prepend(icon);
-      }, { once: true });
-      wrapper.appendChild(video);
-    } else {
-      wrapper.classList.remove('has-video-preview');
-    }
-
+    const label = document.createElement('div');
+    label.textContent = String(item.formatFamily || 'VIDEO').toUpperCase();
     const play = document.createElement('span');
     play.className = 'media-play-button';
     play.textContent = '▶';
@@ -889,13 +852,23 @@
     play.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (item.hostPlayback) {
-        post('playNativeMedia', { absPath: item.absPath, mediaType: 'video' });
-        return;
-      }
-      openVideoDialog(item);
+      post('openWithDefaultApp', { absPath: item.absPath });
+    });
+    play.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      event.stopPropagation();
+      post('openWithDefaultApp', { absPath: item.absPath });
     });
     const duration = durationBadge(item);
+    icon.textContent = 'VIDEO';
+    play.textContent = '▶';
+    play.title = 'Open with default app';
+    play.textContent = '>';
+    play.tabIndex = 0;
+    play.setAttribute('role', 'button');
+    wrapper.appendChild(icon);
+    wrapper.appendChild(label);
     wrapper.appendChild(play);
     wrapper.appendChild(duration);
     container.appendChild(wrapper);
@@ -1630,89 +1603,15 @@
     post('refresh');
   });
 
-  function initializeVideoRates() {
-    const rates = [0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
-    elements.videoRateSelect.replaceChildren();
-    for (const rate of rates) {
-      const option = document.createElement('option');
-      option.value = String(rate);
-      option.textContent = `${rate}x`;
-      if (rate === 1) option.selected = true;
-      elements.videoRateSelect.appendChild(option);
-    }
-  }
-
   elements.modal.addEventListener('click', (event) => {
     if (event.target.closest('[data-close-modal]')) {
       closeInfoModal();
     }
   });
 
-  elements.videoModal.addEventListener('click', (event) => {
-    if (event.target.closest('[data-close-video]')) {
-      closeVideoDialog();
-      return;
-    }
-    if (event.target === elements.videoPlayer || event.target === elements.videoCenterButton) {
-      event.preventDefault();
-      toggleVideoPlayback();
-    }
-  });
-
-  elements.videoPlayer.addEventListener('play', updateVideoProgress);
-  elements.videoPlayer.addEventListener('pause', updateVideoProgress);
-  elements.videoPlayer.addEventListener('ended', updateVideoProgress);
-  elements.videoPlayer.addEventListener('timeupdate', updateVideoProgress);
-  elements.videoPlayer.addEventListener('loadedmetadata', updateVideoProgress);
-  elements.videoPlayer.addEventListener('error', () => {
-    if (state.videoDialogItem && !state.videoErrorSuppressed) {
-      failVideoPlayback(state.videoDialogItem, state.videoOpenToken);
-    }
-  });
-  elements.videoRateSelect.addEventListener('change', () => {
-    elements.videoPlayer.playbackRate = Number(elements.videoRateSelect.value || 1);
-  });
-  elements.videoProgressTrack.addEventListener('pointerdown', (event) => {
-    state.videoProgressDragging = true;
-    elements.videoProgressTrack.classList.add('dragging');
-    elements.videoProgressTrack.setPointerCapture?.(event.pointerId);
-    seekVideoFromEvent(event);
-  });
-  elements.videoProgressTrack.addEventListener('pointermove', (event) => {
-    if (state.videoProgressDragging) seekVideoFromEvent(event);
-  });
-  elements.videoProgressTrack.addEventListener('pointerup', (event) => {
-    if (state.videoProgressDragging) seekVideoFromEvent(event);
-    state.videoProgressDragging = false;
-    elements.videoProgressTrack.classList.remove('dragging');
-  });
-
-  elements.unsupportedModal.addEventListener('click', (event) => {
-    if (event.target.closest('[data-close-unsupported]')) {
-      closeUnsupportedModal();
-    }
-  });
-  elements.openDefaultButton.addEventListener('click', () => {
-    const absPath = unsupportedPath();
-    if (absPath) post('openWithDefaultApp', { absPath });
-    closeUnsupportedModal();
-  });
-  elements.openChooserButton.addEventListener('click', () => {
-    const absPath = unsupportedPath();
-    if (absPath) post('openWithChooser', { absPath });
-    closeUnsupportedModal();
-  });
-  elements.showInSystemButton.addEventListener('click', () => {
-    const absPath = unsupportedPath();
-    if (absPath) post('showInSystem', { absPath });
-    closeUnsupportedModal();
-  });
-
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       closeInfoModal();
-      closeUnsupportedModal();
-      if (!elements.videoModal.classList.contains('hidden')) closeVideoDialog();
       hideContextMenu();
     }
   });
@@ -1728,7 +1627,7 @@
     const msg = typeof message === 'string' ? JSON.parse(message) : message;
 
     if (msg?.type === 'loadingState') {
-      setLoading(!!msg.loading, msg.message || 'Indexing assets...');
+      setLoading(!!msg.loading, msg.message || 'Indexing assets...', msg);
       if (!msg.loading && normalizeText(msg.message).includes('failed')) {
         renderScanFailure(msg.message || '扫描失败');
       }
@@ -1761,7 +1660,6 @@
     }
   };
 
-  initializeVideoRates();
   applyTileSize();
   setLoading(true, 'Indexing assets...');
   post('ready');
