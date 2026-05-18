@@ -9,6 +9,7 @@ import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
 const SCAN_TIMEOUT_MS = 120_000;
 const SCAN_STALE_MS = 12_000;
+const DUPLICATE_PROMPT_DEBOUNCE_MS = 1_500;
 
 export interface LoadingStateMessage {
   count?: number;
@@ -116,7 +117,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private afterRefreshQueue: Array<(items: GalleryAssetItem[]) => Promise<void> | void> = [];
   private cachedItems: GalleryAssetItem[] = [];
   private duplicateIndex: Map<PlatformType, Map<string, GalleryAssetItem[]>> = new Map();
-  private duplicatePromptedKeys = new Set<string>();
+  private duplicatePromptedAt = new Map<string, number>();
   private infoCache = new Map<string, MediaMetadataInfo>();
   private readonly output = vscode.window.createOutputChannel('Image Gallery Preview');
   private refreshPending = false;
@@ -159,16 +160,16 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async startRefresh(forceReindex: boolean, afterRefresh?: (items: GalleryAssetItem[]) => Promise<void> | void): Promise<void> {
-    if (afterRefresh) this.afterRefreshQueue.push(afterRefresh);
-
     if (this.refreshTask) {
+      if (afterRefresh) this.afterRefreshQueue.push(afterRefresh);
       this.refreshPending = true;
       if (forceReindex) this.refreshPendingForce = true;
       await this.refreshTask;
       return;
     }
 
-    this.refreshTask = this.performRefresh(forceReindex);
+    const callbacks = afterRefresh ? [afterRefresh] : this.afterRefreshQueue.splice(0, this.afterRefreshQueue.length);
+    this.refreshTask = this.performRefresh(forceReindex, callbacks);
     try {
       await this.refreshTask;
     } finally {
@@ -257,7 +258,10 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async performRefresh(forceReindex: boolean): Promise<void> {
+  private async performRefresh(
+    forceReindex: boolean,
+    callbacks: Array<(items: GalleryAssetItem[]) => Promise<void> | void>
+  ): Promise<void> {
     const started = Date.now();
     const operation = forceReindex ? 'refresh' : 'sync';
     this.output.appendLine(`[${operation}] starting workspace index`);
@@ -271,7 +275,6 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
         this.infoCache.clear();
         await this.postAssets();
         await this.postLoadingState(false, '');
-        this.afterRefreshQueue = [];
         return;
       }
 
@@ -328,7 +331,6 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       this.output.appendLine(`[${operation}] indexed ${items.length} assets in ${elapsed}ms`);
       await this.postLoadingState(false, `Updated ${new Date().toLocaleTimeString()}`);
 
-      const callbacks = this.afterRefreshQueue.splice(0, this.afterRefreshQueue.length);
       for (const callback of callbacks) {
         await callback(items);
       }
@@ -386,8 +388,10 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     if (!alert) return;
 
     const promptKey = `${alert.newItem.platform}|${alert.newItem.md5}|${normalizePath(alert.newItem.absPath)}|${alert.newItem.mtime}`;
-    if (this.duplicatePromptedKeys.has(promptKey)) return;
-    this.duplicatePromptedKeys.add(promptKey);
+    const now = Date.now();
+    const lastPromptedAt = this.duplicatePromptedAt.get(promptKey) ?? 0;
+    if (now - lastPromptedAt < DUPLICATE_PROMPT_DEBOUNCE_MS) return;
+    this.duplicatePromptedAt.set(promptKey, now);
 
     await this.showDuplicateDialogAndHandle(alert.newItem, alert.duplicates);
   }
@@ -435,6 +439,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
     try {
       await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { recursive: false, useTrash: false });
+      clearDuplicatePromptKeysForPath(this.duplicatePromptedAt, absPath);
       await revealResourceByPath(selected.absPath);
       await this.sync();
     } catch {
@@ -474,7 +479,10 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       };
       watcher.onDidChange(onChange);
       watcher.onDidDelete((uri) => {
-        if (isInterestingFsPath(uri.fsPath)) void this.sync();
+        if (isInterestingFsPath(uri.fsPath)) {
+          clearDuplicatePromptKeysForPath(this.duplicatePromptedAt, uri.fsPath);
+          void this.sync();
+        }
       });
       this.watchers.push(watcher);
     }
@@ -538,6 +546,13 @@ export function duplicateAlertForAffectedPath(
 
   if (!duplicates.length) return null;
   return { newItem, duplicates };
+}
+
+function clearDuplicatePromptKeysForPath(promptedAt: Map<string, number>, absPath: string): void {
+  const marker = `|${normalizePath(absPath)}|`;
+  for (const key of promptedAt.keys()) {
+    if (key.includes(marker)) promptedAt.delete(key);
+  }
 }
 
 function readSmallTextFile(absPath: string): string | null {

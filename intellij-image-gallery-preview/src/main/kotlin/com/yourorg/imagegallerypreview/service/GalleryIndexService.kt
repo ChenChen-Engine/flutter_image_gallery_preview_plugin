@@ -11,8 +11,11 @@ import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileContentChangeEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent
 import com.intellij.openapi.vfs.newvfs.events.VFileCreateEvent
 import com.intellij.openapi.vfs.newvfs.events.VFileDeleteEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileMoveEvent
+import com.intellij.openapi.vfs.newvfs.events.VFilePropertyChangeEvent
 import com.yourorg.imagegallerypreview.metadata.MediaMetadataExtractor
 import com.yourorg.imagegallerypreview.model.GalleryAssetItem
 import com.yourorg.imagegallerypreview.scanner.ProjectAssetScanner
@@ -63,7 +66,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
     @Volatile
     private var duplicateIndex: Map<String, Map<String, List<GalleryAssetItem>>> = emptyMap()
 
-    private val duplicatePromptedKeys = ConcurrentHashMap.newKeySet<String>()
+    private val duplicatePromptedAt = ConcurrentHashMap<String, Long>()
     private val pendingAfterRefreshCallbacks = CopyOnWriteArrayList<() -> Unit>()
 
     @Volatile
@@ -78,14 +81,18 @@ class GalleryIndexService(private val project: Project) : Disposable {
         connection.subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
             override fun after(events: List<com.intellij.openapi.vfs.newvfs.events.VFileEvent>) {
                 val changedPaths = events
-                    .filter { event ->
-                        (event is VFileCreateEvent || event is VFileContentChangeEvent) &&
-                            isInterestingPath(event.path)
-                    }
-                    .map { event -> AssetFileUtil.normalizePath(event.path) }
+                    .mapNotNull { event -> duplicateCandidatePath(event) }
+                    .filter { path -> isInterestingPath(path) || isInterestingContainerPath(path) }
+                    .map { path -> AssetFileUtil.normalizePath(path) }
                     .distinct()
-                val deleted = events.any { event ->
-                    event is VFileDeleteEvent && isInterestingPath(event.path)
+                val deletedPaths = events
+                    .filterIsInstance<VFileDeleteEvent>()
+                    .map { event -> AssetFileUtil.normalizePath(event.path) }
+                    .filter { path -> isInterestingPath(path) || isInterestingContainerPath(path) }
+                val deleted = deletedPaths.isNotEmpty()
+
+                deletedPaths.forEach { path ->
+                    clearDuplicatePromptForPath(path)
                 }
 
                 if (changedPaths.isEmpty() && !deleted) return
@@ -386,7 +393,17 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     private fun handleChangedFileDuplicateCheck(changedPath: String) {
         val normalizedPath = AssetFileUtil.normalizePath(changedPath)
-        val item = cache.firstOrNull { AssetFileUtil.normalizePath(it.absPath) == normalizedPath } ?: return
+        val candidates = cache.filter { item ->
+            val itemPath = AssetFileUtil.normalizePath(item.absPath)
+            itemPath == normalizedPath || itemPath.startsWith("$normalizedPath/")
+        }
+        candidates.forEach { item ->
+            handleChangedItemDuplicateCheck(item)
+        }
+    }
+
+    private fun handleChangedItemDuplicateCheck(item: GalleryAssetItem) {
+        val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
         if (item.mediaType != "image" || item.resourceRootPath.isBlank() || item.md5.isBlank()) return
 
         val duplicates = duplicateIndex[item.platform]
@@ -397,9 +414,28 @@ class GalleryIndexService(private val project: Project) : Disposable {
         if (duplicates.isEmpty()) return
 
         val promptKey = "${item.platform}|${item.md5}|$normalizedPath|${item.mtime}"
-        if (!duplicatePromptedKeys.add(promptKey)) return
+        val now = System.currentTimeMillis()
+        val lastPromptedAt = duplicatePromptedAt[promptKey] ?: 0L
+        if (now - lastPromptedAt < DUPLICATE_PROMPT_DEBOUNCE_MS) return
+        duplicatePromptedAt[promptKey] = now
 
         showDuplicateDialogAndHandle(File(item.absPath), item.platform, duplicates)
+    }
+
+    private fun duplicateCandidatePath(event: com.intellij.openapi.vfs.newvfs.events.VFileEvent): String? {
+        return when (event) {
+            is VFileCreateEvent -> event.path
+            is VFileContentChangeEvent -> event.path
+            is VFileCopyEvent -> event.findCreatedFile()?.path ?: "${event.newParent.path}/${event.newChildName}"
+            is VFileMoveEvent -> event.newPath
+            is VFilePropertyChangeEvent -> if (event.isRename) event.newPath else event.path
+            else -> null
+        }
+    }
+
+    private fun clearDuplicatePromptForPath(path: String) {
+        val normalized = AssetFileUtil.normalizePath(path)
+        duplicatePromptedAt.keys.removeIf { key -> key.contains("|$normalized|") }
     }
 
     private fun showDuplicateDialogAndHandle(newFile: File, platform: String, duplicates: List<GalleryAssetItem>) {
@@ -444,6 +480,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
             return
         }
 
+        clearDuplicatePromptForPath(normalizedNewPath)
         openAssetInEditor(selectedDuplicate.absPath)
         syncAsync()
     }
@@ -493,6 +530,16 @@ class GalleryIndexService(private val project: Project) : Disposable {
         }
 
         return false
+    }
+
+    private fun isInterestingContainerPath(path: String): Boolean {
+        val normalizedPath = path.replace('\\', '/').lowercase(Locale.ROOT).trimEnd('/')
+        if (hasIgnoredSegment(normalizedPath)) return false
+
+        return normalizedPath.contains("/assets") ||
+            normalizedPath.contains("/res") ||
+            normalizedPath.contains("/ios/") ||
+            (normalizedPath.contains("/src/") && normalizedPath.contains("/res/"))
     }
 
     private fun hasIgnoredSegment(path: String): Boolean {
@@ -552,6 +599,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
     companion object {
         private val MAX_METADATA_PARALLELISM = minOf(6, maxOf(2, Runtime.getRuntime().availableProcessors()))
         private const val METADATA_ITEM_TIMEOUT_MS = 15_000L
+        private const val DUPLICATE_PROMPT_DEBOUNCE_MS = 1_500L
 
         fun getInstance(project: Project): GalleryIndexService = project.getService(GalleryIndexService::class.java)
     }

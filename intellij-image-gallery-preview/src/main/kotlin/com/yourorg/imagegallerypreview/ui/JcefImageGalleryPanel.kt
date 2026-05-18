@@ -49,6 +49,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     private val browser: JBCefBrowser?
     private val messageQuery: JBCefJSQuery?
     private val mediaServer: LocalMediaStreamServer?
+    private val videoThumbnailProvider: VideoThumbnailProvider?
     private val latestItems = mutableListOf<GalleryAssetItem>()
 
     @Volatile
@@ -71,15 +72,19 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             browser = null
             messageQuery = null
             mediaServer = null
+            videoThumbnailProvider = null
             add(createUnsupportedPanel(), BorderLayout.CENTER)
         } else {
             browser = JBCefBrowser()
             messageQuery = JBCefJSQuery.create(browser)
             val server = LocalMediaStreamServer(logger)
+            val thumbnails = VideoThumbnailProvider(logger)
             mediaServer = server
+            videoThumbnailProvider = thumbnails
             Disposer.register(this, browser)
             Disposer.register(this, messageQuery)
             Disposer.register(this, server)
+            Disposer.register(this, thumbnails)
             messageQuery.addHandler { rawMessage ->
                 handleWebMessage(rawMessage)
                 null
@@ -164,7 +169,9 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
                 val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
                 val file = File(normalizedPath)
                 val previewSrc = when {
-                    item.mediaType == "video" -> mediaServer?.urlFor(file) ?: file.toURI().toASCIIString()
+                    item.mediaType == "video" -> videoThumbnailProvider?.posterUriFor(file)
+                        ?: mediaServer?.urlFor(file)
+                        ?: file.toURI().toASCIIString()
                     item.mediaType == "image" || item.formatFamily == "lottie" -> file.toURI().toASCIIString()
                     else -> null
                 }

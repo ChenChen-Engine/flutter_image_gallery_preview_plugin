@@ -831,6 +831,21 @@
 
   function appendVideoCover(wrapper, item) {
     wrapper.classList.add('has-video-preview');
+    if (isStaticVideoPoster(item.previewSrc)) {
+      const image = document.createElement('img');
+      image.className = 'video-cover-img';
+      image.alt = '';
+      image.decoding = 'async';
+      image.src = item.previewSrc;
+      image.addEventListener('error', () => {
+        image.remove();
+        wrapper.classList.remove('has-video-preview');
+        appendVideoPlaceholderContents(wrapper, item);
+      }, { once: true });
+      wrapper.appendChild(image);
+      return;
+    }
+
     const video = document.createElement('video');
     video.className = 'video-cover-img';
     video.muted = true;
@@ -870,6 +885,13 @@
     video.addEventListener('error', fallback, { once: true });
     window.setTimeout(fallback, 5000);
     wrapper.appendChild(video);
+  }
+
+  function isStaticVideoPoster(src) {
+    return typeof src === 'string' && (
+      src.includes('gallery-poster') ||
+      /\.(png|jpe?g|webp|gif)(?:[?#].*)?$/i.test(src)
+    );
   }
 
   function appendVideoPlaceholderContents(wrapper, item) {
