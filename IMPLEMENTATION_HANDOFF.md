@@ -316,9 +316,10 @@ The plugins align on these core fields:
 
 - IntelliJ version source:
   - `C:\Users\chenz\Desktop\flutter_image_gallery_preview_plugin\intellij-image-gallery-preview\version.txt`
+- VSCode version source:
+  - `C:\Users\chenz\Desktop\flutter_image_gallery_preview_plugin\vscode-image-gallery-preview\package.json`
 - Version policy:
-  - base starts at `0.0.1`
-  - package build increments patch by `+1`
+  - set the release version explicitly in both plugin manifests before packaging
 - IntelliJ output:
   - `C:\Users\chenz\Desktop\flutter_image_gallery_preview_plugin\intellij-image-gallery-preview\output`
 - VSCode output:
@@ -340,7 +341,7 @@ cmd /c build-plugin.bat
 cd vscode-image-gallery-preview
 cmd /c npm run compile
 cmd /c "node -e ""require('./dist/test/suite/index').run().then(()=>process.exit(0),e=>{console.error(e);process.exit(1)})"""
-cmd /c npm run package
+cmd /c build-plugin.bat
 ```
 
 ## Practical notes for future AI runs

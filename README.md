@@ -85,7 +85,7 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
 
 ### VSCode
 
-1. Build VSIX with `npm run package` from `vscode-image-gallery-preview`.
+1. Build VSIX with `cmd /c build-plugin.bat` from `vscode-image-gallery-preview`.
 2. In VSCode, uninstall any existing `Image Gallery Preview` extension build, then run `Developer: Reload Window`.
 3. Run `Extensions: Install from VSIX...`.
 4. Select the newest file from `vscode-image-gallery-preview/output/`.
@@ -107,7 +107,7 @@ cd intellij-image-gallery-preview
 ```powershell
 cd vscode-image-gallery-preview
 cmd /c npm ci
-cmd /c npm run package
+cmd /c build-plugin.bat
 ```
 
 ## Share with team
