@@ -5,7 +5,6 @@ import { Worker } from 'worker_threads';
 import { extractMediaInfo, seedMediaInfoCache } from './mediaMetadata';
 import { ScanWorkerMessage, ScanWorkerProgress } from './scanWorker';
 import { GalleryAssetItem, MediaMetadataInfo, PlatformType } from './shared/types';
-import { thumbnailForVideo, VIDEO_THUMBNAIL_DIR } from './videoThumbnail';
 import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
 const SCAN_TIMEOUT_MS = 120_000;
@@ -117,6 +116,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private afterRefreshQueue: Array<(items: GalleryAssetItem[]) => Promise<void> | void> = [];
   private cachedItems: GalleryAssetItem[] = [];
   private duplicateIndex: Map<PlatformType, Map<string, GalleryAssetItem[]>> = new Map();
+  private duplicatePromptedKeys = new Set<string>();
   private infoCache = new Map<string, MediaMetadataInfo>();
   private readonly output = vscode.window.createOutputChannel('Image Gallery Preview');
   private refreshPending = false;
@@ -141,7 +141,6 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [
         vscode.Uri.file(path.join(this.context.extensionPath, 'webview')),
-        vscode.Uri.file(VIDEO_THUMBNAIL_DIR),
         ...(vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri)
       ]
     };
@@ -373,7 +372,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     const index = new Map<PlatformType, Map<string, GalleryAssetItem[]>>();
 
     for (const item of items) {
-      if (item.mediaType !== 'image' || !item.md5) continue;
+      if (item.mediaType !== 'image' || !item.resourceRootPath || !item.md5) continue;
       const platformMap = index.get(item.platform) ?? new Map<string, GalleryAssetItem[]>();
       const list = platformMap.get(item.md5) ?? [];
       list.push(item);
@@ -385,22 +384,30 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   }
 
   private duplicateAlertsFor(previousItems: GalleryAssetItem[], currentItems: GalleryAssetItem[]): Array<{ newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] }> {
-    if (!previousItems.length) return [];
-
     const previousByPath = new Map(previousItems.map((item) => [normalizePath(item.absPath), item]));
     const currentIndex = this.buildDuplicateIndex(currentItems);
+    const alerts: Array<{ newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] }> = [];
 
-    return currentItems.flatMap((item) => {
-      if (item.mediaType !== 'image' || !item.resourceRootPath || !item.md5) return [];
-      const normalizedPath = normalizePath(item.absPath);
-      const previous = previousByPath.get(normalizedPath);
-      const isNewOrChanged = !previous || previous.md5 !== item.md5;
-      if (!isNewOrChanged) return [];
+    for (const platformMap of currentIndex.values()) {
+      for (const group of platformMap.values()) {
+        if (group.length < 2) continue;
+        const key = duplicateGroupKey(group);
+        if (this.duplicatePromptedKeys.has(key)) continue;
 
-      const duplicates = (currentIndex.get(item.platform)?.get(item.md5) ?? [])
-        .filter((candidate) => normalizePath(candidate.absPath) !== normalizedPath);
-      return duplicates.length ? [{ newItem: item, duplicates }] : [];
-    });
+        const changedItems = group.filter((item) => {
+          const previous = previousByPath.get(normalizePath(item.absPath));
+          return !previous || previous.md5 !== item.md5 || previous.mtime !== item.mtime;
+        });
+        const newItem = newestItem(changedItems.length ? changedItems : group);
+        const duplicates = group.filter((item) => normalizePath(item.absPath) !== normalizePath(newItem.absPath));
+        if (!duplicates.length) continue;
+
+        this.duplicatePromptedKeys.add(key);
+        alerts.push({ newItem, duplicates });
+      }
+    }
+
+    return alerts;
   }
 
   private async handleDuplicateAlerts(previousItems: GalleryAssetItem[], currentItems: GalleryAssetItem[]): Promise<void> {
@@ -516,13 +523,23 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
 export async function previewUriForItem(webview: vscode.Webview, item: GalleryAssetItem): Promise<string | null> {
   if (item.mediaType === 'video') {
-    const thumbnailPath = await thumbnailForVideo(item.absPath);
-    return thumbnailPath ? webview.asWebviewUri(vscode.Uri.file(thumbnailPath)).toString() : null;
+    return webview.asWebviewUri(vscode.Uri.file(item.absPath)).toString();
   }
 
   const renderable = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'apng', 'avif', 'ico', 'lottie'].includes(item.formatFamily);
   if (!renderable) return null;
   return webview.asWebviewUri(vscode.Uri.file(item.absPath)).toString();
+}
+
+function duplicateGroupKey(group: GalleryAssetItem[]): string {
+  return group
+    .map((item) => `${item.platform}|${item.md5}|${normalizePath(item.absPath)}|${item.mtime}`)
+    .sort()
+    .join('\n');
+}
+
+function newestItem(items: GalleryAssetItem[]): GalleryAssetItem {
+  return items.reduce((latest, item) => (item.mtime > latest.mtime ? item : latest), items[0]);
 }
 
 function readSmallTextFile(absPath: string): string | null {

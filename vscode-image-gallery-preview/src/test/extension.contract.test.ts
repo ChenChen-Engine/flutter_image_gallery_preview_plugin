@@ -3,7 +3,7 @@ import Module = require('module');
 import { GalleryAssetItem, MediaMetadataInfo } from '../shared/types';
 
 suite('extension contracts', () => {
-  test('only creates preview URIs for image and lottie payloads', async () => {
+  test('creates preview URIs for images, lottie, and video cover probing', async () => {
     const extensionModule = requireExtensionModule();
     const previewUriForItem = extensionModule.previewUriForItem as ((webview: any, item: GalleryAssetItem) => Promise<string | null>) | undefined;
 
@@ -18,7 +18,7 @@ suite('extension contracts', () => {
     assert.ok(await previewUriForItem!(webview, asset('png')));
     assert.ok(await previewUriForItem!(webview, asset('lottie')));
     assert.strictEqual(await previewUriForItem!(webview, asset('mp3', 'audio')), null);
-    assert.strictEqual(await previewUriForItem!(webview, asset('mp4', 'video')), null);
+    assert.ok(await previewUriForItem!(webview, asset('mp4', 'video')));
   });
 
   test('primes media info cache from indexed items', () => {

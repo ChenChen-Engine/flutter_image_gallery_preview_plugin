@@ -20,6 +20,7 @@ import com.yourorg.imagegallerypreview.util.AssetFileUtil
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.Callable
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
@@ -61,6 +62,8 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     @Volatile
     private var duplicateIndex: Map<String, Map<String, List<GalleryAssetItem>>> = emptyMap()
+
+    private val duplicatePromptedKeys = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var lastStatus: IndexStatus = IndexStatus(IndexState.IDLE, "Idle")
@@ -360,7 +363,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     private fun buildDuplicateIndex(items: List<GalleryAssetItem>): Map<String, Map<String, List<GalleryAssetItem>>> {
         return items
-            .filter { it.mediaType == "image" && it.md5.isNotBlank() }
+            .filter { it.mediaType == "image" && it.resourceRootPath.isNotBlank() && it.md5.isNotBlank() }
             .groupBy { it.platform }
             .mapValues { (_, platformItems) ->
                 platformItems.groupBy { it.md5 }
@@ -376,23 +379,38 @@ class GalleryIndexService(private val project: Project) : Disposable {
         previousItems: List<GalleryAssetItem>,
         currentItems: List<GalleryAssetItem>
     ): List<DuplicateAlert> {
-        if (previousItems.isEmpty()) return emptyList()
         val previousByPath = previousItems.associateBy { AssetFileUtil.normalizePath(it.absPath) }
         val currentIndex = buildDuplicateIndex(currentItems)
+        val alerts = mutableListOf<DuplicateAlert>()
 
-        return currentItems.mapNotNull { item ->
-            if (item.mediaType != "image" || item.resourceRootPath.isBlank() || item.md5.isBlank()) return@mapNotNull null
-            val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
-            val previous = previousByPath[normalizedPath]
-            val isNewOrChanged = previous == null || previous.md5 != item.md5
-            if (!isNewOrChanged) return@mapNotNull null
+        currentIndex.values.forEach { platformMap ->
+            platformMap.values.forEach { group ->
+                if (group.size < 2) return@forEach
+                val key = duplicateGroupKey(group)
+                if (!duplicatePromptedKeys.add(key)) return@forEach
 
-            val duplicates = currentIndex[item.platform]
-                ?.get(item.md5)
-                ?.filter { candidate -> AssetFileUtil.normalizePath(candidate.absPath) != normalizedPath }
-                .orEmpty()
-            if (duplicates.isEmpty()) null else DuplicateAlert(item, duplicates)
+                val changedItems = group.filter { item ->
+                    val previous = previousByPath[AssetFileUtil.normalizePath(item.absPath)]
+                    previous == null || previous.md5 != item.md5 || previous.mtime != item.mtime
+                }
+                val newItem = (changedItems.ifEmpty { group }).maxBy { it.mtime }
+                val duplicates = group.filter { item ->
+                    AssetFileUtil.normalizePath(item.absPath) != AssetFileUtil.normalizePath(newItem.absPath)
+                }
+                if (duplicates.isNotEmpty()) {
+                    alerts += DuplicateAlert(newItem, duplicates)
+                }
+            }
         }
+
+        return alerts
+    }
+
+    private fun duplicateGroupKey(group: List<GalleryAssetItem>): String {
+        return group
+            .map { item -> "${item.platform}|${item.md5}|${AssetFileUtil.normalizePath(item.absPath)}|${item.mtime}" }
+            .sorted()
+            .joinToString("\n")
     }
 
     private fun showDuplicateDialogAndHandle(newFile: File, platform: String, duplicates: List<GalleryAssetItem>) {

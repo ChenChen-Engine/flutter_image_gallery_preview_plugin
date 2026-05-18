@@ -820,18 +820,7 @@
     const wrapper = document.createElement('div');
     wrapper.className = 'media-placeholder video-placeholder';
     if (item.previewSrc) {
-      wrapper.classList.add('has-video-preview');
-      const image = document.createElement('img');
-      image.className = 'video-cover-img';
-      image.alt = fileNameOf(item);
-      image.loading = 'lazy';
-      image.src = item.previewSrc;
-      image.addEventListener('error', () => {
-        wrapper.classList.remove('has-video-preview');
-        wrapper.replaceChildren();
-        appendVideoPlaceholderContents(wrapper, item);
-      }, { once: true });
-      wrapper.appendChild(image);
+      appendVideoCover(wrapper, item);
     } else {
       appendVideoPlaceholderContents(wrapper, item);
     }
@@ -840,14 +829,58 @@
     container.appendChild(wrapper);
   }
 
+  function appendVideoCover(wrapper, item) {
+    wrapper.classList.add('has-video-preview');
+    const video = document.createElement('video');
+    video.className = 'video-cover-img';
+    video.muted = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.controls = false;
+    video.tabIndex = -1;
+    video.setAttribute('aria-hidden', 'true');
+    video.src = item.previewSrc;
+
+    let resolved = false;
+    const resolveCover = () => {
+      if (resolved) return;
+      resolved = true;
+      video.pause();
+      wrapper.classList.add('has-video-preview');
+    };
+    const fallback = () => {
+      if (resolved) return;
+      resolved = true;
+      video.remove();
+      wrapper.classList.remove('has-video-preview');
+      appendVideoPlaceholderContents(wrapper, item);
+    };
+
+    video.addEventListener('loadedmetadata', () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const target = duration > 1 ? Math.min(1, duration * 0.1) : 0.01;
+      try {
+        video.currentTime = target;
+      } catch (_error) {
+        resolveCover();
+      }
+    }, { once: true });
+    video.addEventListener('seeked', resolveCover, { once: true });
+    video.addEventListener('loadeddata', resolveCover, { once: true });
+    video.addEventListener('error', fallback, { once: true });
+    window.setTimeout(fallback, 5000);
+    wrapper.appendChild(video);
+  }
+
   function appendVideoPlaceholderContents(wrapper, item) {
     const icon = document.createElement('div');
     icon.className = 'media-icon';
     icon.textContent = '\u25a3';
     const label = document.createElement('div');
     label.textContent = String(item.formatFamily || 'VIDEO').toUpperCase();
-    wrapper.appendChild(icon);
-    wrapper.appendChild(label);
+    const play = wrapper.querySelector('.media-play-button');
+    wrapper.insertBefore(icon, play);
+    wrapper.insertBefore(label, play);
   }
 
   function createExternalPlayButton(item, title) {
