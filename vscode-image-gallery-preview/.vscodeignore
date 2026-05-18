@@ -6,4 +6,3 @@ tsconfig.json
 **/*.ts
 node_modules/lottie-web/**
 .gitignore
-README.md

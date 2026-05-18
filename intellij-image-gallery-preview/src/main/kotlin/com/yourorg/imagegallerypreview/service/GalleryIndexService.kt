@@ -60,6 +60,8 @@ class GalleryIndexService(private val project: Project) : Disposable {
     )
 
     private val scanner = ProjectAssetScanner(project)
+    private val projectRootPath = project.basePath
+        ?.let { AssetFileUtil.normalizePath(File(it).absolutePath).trimEnd('/') }
     private val listeners = CopyOnWriteArrayList<(List<GalleryAssetItem>) -> Unit>()
     private val statusListeners = CopyOnWriteArrayList<(IndexStatus) -> Unit>()
 
@@ -83,14 +85,22 @@ class GalleryIndexService(private val project: Project) : Disposable {
         val connection = project.messageBus.connect(this)
         connection.subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
             override fun after(events: List<com.intellij.openapi.vfs.newvfs.events.VFileEvent>) {
-                val changedPaths = events
+                val duplicatePaths = events
                     .mapNotNull { event -> duplicateCandidatePath(event) }
+                    .filter { path -> isPathInsideProject(path) }
+                    .filter { path -> isInterestingPath(path) || isInterestingContainerPath(path) }
+                    .map { path -> AssetFileUtil.normalizePath(path) }
+                    .distinct()
+                val syncPaths = events
+                    .flatMap { event -> syncCandidatePaths(event) }
+                    .filter { path -> isPathInsideProject(path) }
                     .filter { path -> isInterestingPath(path) || isInterestingContainerPath(path) }
                     .map { path -> AssetFileUtil.normalizePath(path) }
                     .distinct()
                 val deletedPaths = events
                     .filterIsInstance<VFileDeleteEvent>()
                     .map { event -> AssetFileUtil.normalizePath(event.path) }
+                    .filter { path -> isPathInsideProject(path) }
                     .filter { path -> isInterestingPath(path) || isInterestingContainerPath(path) }
                 val deleted = deletedPaths.isNotEmpty()
 
@@ -98,14 +108,14 @@ class GalleryIndexService(private val project: Project) : Disposable {
                     clearDuplicatePromptForPath(path)
                 }
 
-                if (changedPaths.isEmpty() && !deleted) return
+                if (syncPaths.isEmpty() && !deleted) return
 
-                if (changedPaths.isNotEmpty()) {
-                    changedPaths.forEach { path ->
+                if (syncPaths.isNotEmpty()) {
+                    duplicatePaths.forEach { path ->
                         handleChangedPathDuplicateCheckFast(path)
                     }
                     syncAsync {
-                        changedPaths.forEach { path ->
+                        duplicatePaths.forEach { path ->
                             handleChangedFileDuplicateCheck(path)
                         }
                     }
@@ -506,9 +516,25 @@ class GalleryIndexService(private val project: Project) : Disposable {
             is VFileContentChangeEvent -> event.path
             is VFileCopyEvent -> event.findCreatedFile()?.path ?: "${event.newParent.path}/${event.newChildName}"
             is VFileMoveEvent -> event.newPath
-            is VFilePropertyChangeEvent -> if (event.isRename) event.newPath else event.path
             else -> null
         }
+    }
+
+    private fun syncCandidatePaths(event: com.intellij.openapi.vfs.newvfs.events.VFileEvent): List<String> {
+        return when (event) {
+            is VFileCreateEvent -> listOf(event.path)
+            is VFileContentChangeEvent -> listOf(event.path)
+            is VFileCopyEvent -> listOf(event.findCreatedFile()?.path ?: "${event.newParent.path}/${event.newChildName}")
+            is VFileMoveEvent -> listOf(event.path, event.newPath)
+            is VFilePropertyChangeEvent -> listOfNotNull(event.path, event.newPath)
+            else -> emptyList()
+        }
+    }
+
+    private fun isPathInsideProject(path: String): Boolean {
+        val root = projectRootPath ?: return false
+        val normalizedPath = AssetFileUtil.normalizePath(path).trimEnd('/')
+        return normalizedPath == root || normalizedPath.startsWith("$root/")
     }
 
     private fun clearDuplicatePromptForPath(path: String) {

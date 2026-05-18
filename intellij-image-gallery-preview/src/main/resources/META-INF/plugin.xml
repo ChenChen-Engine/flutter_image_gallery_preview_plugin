@@ -3,9 +3,9 @@
     <name>Image Gallery Preview</name>
     <vendor email="dev@yourorg.local">YourOrg</vendor>
 
-    <description>
-        Preview Android, Flutter, and iOS image resources with grouping, filters, and copy interactions.
-    </description>
+    <description><![CDATA[
+        在工具窗口中预览 Android、Flutter、iOS 资源文件，支持分组筛选、快速复制、MediaInfo 信息查看，以及重复资源检测。
+    ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
 
