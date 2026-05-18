@@ -515,7 +515,6 @@ class GalleryIndexService(private val project: Project) : Disposable {
             is VFileCreateEvent -> event.path
             is VFileContentChangeEvent -> event.path
             is VFileCopyEvent -> event.findCreatedFile()?.path ?: "${event.newParent.path}/${event.newChildName}"
-            is VFileMoveEvent -> event.newPath
             else -> null
         }
     }
