@@ -10,6 +10,10 @@ import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
 const SCAN_TIMEOUT_MS = 120_000;
 const SCAN_STALE_MS = 12_000;
+const IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'pdf', 'heic', 'heif', 'apng', 'avif', 'ico', 'lottie', 'vector_xml']);
+const AUDIO_FORMATS = new Set(['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'amr', 'mid', 'midi', 'caf', 'wma', 'aiff', 'aif', 'alac', 'mka']);
+const VIDEO_FORMATS = new Set(['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', '3gp', '3gpp', 'mpeg', 'mpg', 'ts', 'm2ts', 'wmv', 'flv']);
+const DIRECT_FORMATS = new Set([...IMAGE_FORMATS, ...AUDIO_FORMATS, ...VIDEO_FORMATS]);
 
 export interface LoadingStateMessage {
   count?: number;
@@ -377,7 +381,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     const index = new Map<PlatformType, Map<string, GalleryAssetItem[]>>();
 
     for (const item of items) {
-      if (item.mediaType !== 'image' || !item.resourceRootPath || !item.md5) continue;
+      if (!item.resourceRootPath || !item.md5) continue;
       const platformMap = index.get(item.platform) ?? new Map<string, GalleryAssetItem[]>();
       const list = platformMap.get(item.md5) ?? [];
       list.push(item);
@@ -401,6 +405,8 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
   private async showDuplicateDialogAndHandle(createdItem: GalleryAssetItem, duplicates: GalleryAssetItem[]): Promise<void> {
     const absPath = normalizePath(createdItem.absPath);
+    if (!safeStat(absPath)?.isFile()) return;
+
     let selected = duplicates[0];
     if (duplicates.length > 1) {
       const picked = await vscode.window.showQuickPick(
@@ -410,7 +416,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
           item
         })),
         {
-          title: '检测到多个重复图片，请选择要定位的旧图',
+          title: '检测到多个重复资源，请选择要定位的已存在资源',
           canPickMany: false,
           ignoreFocusOut: true
         }
@@ -421,10 +427,10 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     }
 
     const messageLines = [
-      `检测到重复图片（同平台）：${createdItem.platform}`,
-      `新图：${absPath}`,
+      `检测到重复资源（同平台）：${createdItem.platform}`,
+      `新添加资源：${absPath}`,
       '',
-      '命中路径：',
+      '已存在资源路径：',
       selected.absPath
     ];
     if (duplicates.length > 1) {
@@ -434,19 +440,20 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     const choice = await vscode.window.showWarningMessage(
       messageLines.join('\n'),
       { modal: true },
-      '强制添加新图',
-      '删除新图并定位旧图'
+      '强制添加新资源',
+      '删除新添加资源并定位已存在资源'
     );
 
-    if (choice !== '删除新图并定位旧图') return;
+    if (choice !== '删除新添加资源并定位已存在资源') return;
 
     try {
+      if (!safeStat(absPath)?.isFile()) return;
       await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { recursive: false, useTrash: false });
       clearDuplicatePromptKeysForPath(this.duplicatePromptedKeys, absPath);
       await revealResourceByPath(selected.absPath);
       await this.sync();
     } catch {
-      await vscode.window.showErrorMessage(`无法删除新图片，请手动处理：${absPath}`);
+      await vscode.window.showErrorMessage(`无法删除新添加资源，请手动处理：${absPath}`);
     }
   }
 
@@ -539,10 +546,9 @@ export function duplicateAlertForAffectedPath(
 ): { newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] } | null {
   const normalizedPath = normalizePath(affectedPath);
   const newItem = items.find((item) => normalizePath(item.absPath) === normalizedPath);
-  if (!newItem || newItem.mediaType !== 'image' || !newItem.resourceRootPath || !newItem.md5) return null;
+  if (!newItem || !newItem.resourceRootPath || !newItem.md5 || !safeStat(normalizedPath)?.isFile()) return null;
 
   const duplicates = items.filter((item) =>
-    item.mediaType === 'image' &&
     item.resourceRootPath &&
     item.platform === newItem.platform &&
     item.md5 === newItem.md5 &&
@@ -564,6 +570,9 @@ export function duplicateAlertFromIndexedMd5(
   const platform = inferPlatformForPath(normalizedPath);
   if (!platform) return null;
 
+  const detected = detectDuplicateCandidateKind(normalizedPath, platform);
+  if (!detected) return null;
+
   const md5 = md5Hex(affectedPath);
   if (!md5) return null;
 
@@ -571,16 +580,15 @@ export function duplicateAlertFromIndexedMd5(
     ?.filter((item) => normalizePath(item.absPath) !== normalizedPath) ?? [];
   if (!duplicates.length) return null;
 
-  const extension = path.extname(affectedPath).replace(/^\./, '').toLowerCase() as GalleryAssetItem['formatFamily'];
   const newItem: GalleryAssetItem = {
     ...duplicates[0],
     absPath: normalizedPath,
     relPath: normalizedPath,
     copyToken: normalizedPath,
     md5,
-    formatFamily: extension,
-    format: extension,
-    mediaType: 'image',
+    formatFamily: detected.formatFamily,
+    format: path.extname(affectedPath).replace(/^\./, '').toLowerCase(),
+    mediaType: detected.mediaType,
     durationMillis: null,
     mtime: stat.mtimeMs,
     width: null,
@@ -596,15 +604,71 @@ export function duplicatePromptKeyForItem(item: GalleryAssetItem): string {
   const normalizedPath = normalizePath(item.absPath);
   const stat = safeStat(normalizedPath);
   const created = stat ? Math.round(stat.birthtimeMs) : 0;
-  const modified = stat ? Math.round(stat.mtimeMs) : Math.round(item.mtime);
-  const size = stat ? stat.size : 0;
-  return `${item.platform}|${item.md5}|${normalizedPath}|${created}|${modified}|${size}`;
+  return `${item.platform}|${item.md5}|${normalizedPath}|${created}`;
 }
 
 function clearDuplicatePromptKeysForPath(promptedKeys: Set<string>, absPath: string): void {
   const marker = `|${normalizePath(absPath)}|`;
   for (const key of promptedKeys) {
     if (key.includes(marker)) promptedKeys.delete(key);
+  }
+}
+
+function detectDuplicateCandidateKind(filePath: string, platform: PlatformType): { formatFamily: GalleryAssetItem['formatFamily']; mediaType: GalleryAssetItem['mediaType'] } | null {
+  const normalized = normalizePath(filePath).toLowerCase();
+  const extension = path.extname(filePath).replace(/^\./, '').toLowerCase();
+  let formatFamily = extension;
+
+  if (extension === 'json' && looksLikeLottie(filePath)) {
+    formatFamily = 'lottie';
+  } else if (
+    extension === 'xml' &&
+    platform === 'android' &&
+    /\/src\/[^/]+\/res\/(?:drawable|mipmap)/.test(normalized) &&
+    looksLikeVectorDrawable(filePath)
+  ) {
+    formatFamily = 'vector_xml';
+  }
+
+  if (!DIRECT_FORMATS.has(formatFamily)) return null;
+
+  const mediaType = mediaTypeForDuplicateKind(formatFamily);
+  if (platform === 'android') {
+    const isRaw = /\/src\/[^/]+\/res\/raw/.test(normalized);
+    const isDrawableOrMipmap = /\/src\/[^/]+\/res\/(?:drawable|mipmap)/.test(normalized);
+    if (isRaw && mediaType === 'image') return null;
+    if (isDrawableOrMipmap && mediaType !== 'image') return null;
+    if (!isRaw && !isDrawableOrMipmap) return null;
+  }
+
+  return {
+    formatFamily: formatFamily as GalleryAssetItem['formatFamily'],
+    mediaType
+  };
+}
+
+function mediaTypeForDuplicateKind(formatFamily: string): GalleryAssetItem['mediaType'] {
+  if (AUDIO_FORMATS.has(formatFamily)) return 'audio';
+  if (VIDEO_FORMATS.has(formatFamily)) return 'video';
+  return 'image';
+}
+
+function looksLikeLottie(filePath: string): boolean {
+  try {
+    if (path.extname(filePath).toLowerCase() !== '.json') return false;
+    const text = fs.readFileSync(filePath, 'utf8');
+    return text.includes('"layers"') && text.includes('"v"') && text.includes('"w"') && text.includes('"h"');
+  } catch {
+    return false;
+  }
+}
+
+function looksLikeVectorDrawable(filePath: string): boolean {
+  try {
+    const text = fs.readFileSync(filePath, 'utf8');
+    return text.includes('<vector') && text.includes('http://schemas.android.com/apk/res/android');
+  } catch {
+    return false;
   }
 }
 

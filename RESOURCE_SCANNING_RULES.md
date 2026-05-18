@@ -98,12 +98,11 @@ Both plugins align on:
 ## Duplicate handling
 
 - Startup background indexing is enabled.
-- Duplicate key is `same platform + md5`.
-- New file is checked immediately after creation (post-create interception pattern).
+- Duplicate key is `same platform + md5`; all scanned resource formats participate, not only images.
+- New file is checked immediately after creation or modification using the in-memory MD5 index before the full sync completes.
+- Existing duplicates found during startup/full indexing are not forced on the user; only later manually added duplicate resources prompt.
 - If duplicate is found:
   - Prompt with:
-    - `强制添加新图`
-    - `删除新图并定位旧图`
-    - `强制添加新图`
-    - `删除新图并定位旧图`
+    - `强制添加新资源`
+    - `删除新添加资源并定位已存在资源`
   - If multiple existing duplicates are found, user selects one target path before opening.

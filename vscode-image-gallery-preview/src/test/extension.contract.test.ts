@@ -44,40 +44,77 @@ suite('extension contracts', () => {
     assert.strictEqual(cache.get('C:/demo/app/src/main/res/drawable/icon.png')?.sections[0].title, 'Image');
   });
 
-  test('detects duplicate images only for the affected file path', () => {
+  test('detects duplicate resources only for the affected file path', () => {
     const extensionModule = requireExtensionModule();
     const duplicateAlertForAffectedPath = extensionModule.duplicateAlertForAffectedPath as ((items: GalleryAssetItem[], affectedPath: string) => { newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] } | null) | undefined;
 
     assert.ok(duplicateAlertForAffectedPath, 'expected extension to export duplicateAlertForAffectedPath for contract tests');
 
-    const existing = asset('png', 'image', {
-      absPath: 'C:/demo/res/image/a.png',
-      relPath: 'res/image/a.png',
-      resourceRootPath: 'C:/demo/res/image',
-      md5: 'same-md5',
-      mtime: 1
-    });
-    const added = asset('png', 'image', {
-      absPath: 'C:/demo/res/image/news/a.png',
-      relPath: 'res/image/news/a.png',
-      resourceRootPath: 'C:/demo/res/image',
-      md5: 'same-md5',
-      mtime: 2
-    });
-    const otherPlatform = asset('png', 'image', {
-      absPath: 'C:/demo/ios/Runner/Assets.xcassets/a.imageset/a.png',
-      relPath: 'ios/Runner/Assets.xcassets/a.imageset/a.png',
-      resourceRootPath: 'C:/demo/ios/Runner/Assets.xcassets/a.imageset',
-      platform: 'ios',
-      md5: 'same-md5',
-      mtime: 3
-    });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'igp-dup-affected-'));
+    try {
+      const existingPath = normalizeForTest(path.join(root, 'res', 'image', 'a.png'));
+      const addedPath = normalizeForTest(path.join(root, 'res', 'image', 'news', 'a.png'));
+      const audioExistingPath = normalizeForTest(path.join(root, 'res', 'audio', 'a.mp3'));
+      const audioAddedPath = normalizeForTest(path.join(root, 'res', 'audio', 'news', 'a.mp3'));
+      const otherPlatformPath = normalizeForTest(path.join(root, 'ios', 'Runner', 'Assets.xcassets', 'a.imageset', 'a.png'));
+      for (const filePath of [existingPath, addedPath, audioExistingPath, audioAddedPath, otherPlatformPath]) {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, Buffer.from('same'));
+      }
 
-    assert.strictEqual(duplicateAlertForAffectedPath!([existing, added, otherPlatform], existing.absPath)?.newItem.absPath, existing.absPath);
-    const alert = duplicateAlertForAffectedPath!([existing, added, otherPlatform], added.absPath);
-    assert.strictEqual(alert?.newItem.absPath, added.absPath);
-    assert.deepStrictEqual(alert?.duplicates.map((item) => item.absPath), [existing.absPath]);
-    assert.strictEqual(duplicateAlertForAffectedPath!([existing, added, otherPlatform], 'C:/demo/res/image/missing.png'), null);
+      const existing = asset('png', 'image', {
+        absPath: existingPath,
+        relPath: 'res/image/a.png',
+        resourceRootPath: normalizeForTest(path.join(root, 'res', 'image')),
+        platform: 'flutter',
+        md5: 'same-md5',
+        mtime: 1
+      });
+      const added = asset('png', 'image', {
+        absPath: addedPath,
+        relPath: 'res/image/news/a.png',
+        resourceRootPath: normalizeForTest(path.join(root, 'res', 'image')),
+        platform: 'flutter',
+        md5: 'same-md5',
+        mtime: 2
+      });
+      const audioExisting = asset('mp3', 'audio', {
+        absPath: audioExistingPath,
+        relPath: 'res/audio/a.mp3',
+        resourceRootPath: normalizeForTest(path.join(root, 'res', 'audio')),
+        platform: 'flutter',
+        md5: 'same-audio-md5',
+        mtime: 4
+      });
+      const audioAdded = asset('mp3', 'audio', {
+        absPath: audioAddedPath,
+        relPath: 'res/audio/news/a.mp3',
+        resourceRootPath: normalizeForTest(path.join(root, 'res', 'audio')),
+        platform: 'flutter',
+        md5: 'same-audio-md5',
+        mtime: 5
+      });
+      const otherPlatform = asset('png', 'image', {
+        absPath: otherPlatformPath,
+        relPath: 'ios/Runner/Assets.xcassets/a.imageset/a.png',
+        resourceRootPath: normalizeForTest(path.dirname(otherPlatformPath)),
+        platform: 'ios',
+        md5: 'same-md5',
+        mtime: 3
+      });
+
+      assert.strictEqual(duplicateAlertForAffectedPath!([existing, added, otherPlatform], existing.absPath)?.newItem.absPath, existing.absPath);
+      const alert = duplicateAlertForAffectedPath!([existing, added, otherPlatform], added.absPath);
+      assert.strictEqual(alert?.newItem.absPath, added.absPath);
+      assert.deepStrictEqual(alert?.duplicates.map((item) => item.absPath), [existing.absPath]);
+
+      const audioAlert = duplicateAlertForAffectedPath!([audioExisting, audioAdded], audioAdded.absPath);
+      assert.strictEqual(audioAlert?.newItem.absPath, audioAdded.absPath);
+      assert.deepStrictEqual(audioAlert?.duplicates.map((item) => item.absPath), [audioExisting.absPath]);
+      assert.strictEqual(duplicateAlertForAffectedPath!([existing, added, otherPlatform], normalizeForTest(path.join(root, 'res', 'image', 'missing.png'))), null);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('detects repeated duplicate copies from indexed md5 without waiting for rescan', () => {
@@ -113,12 +150,50 @@ suite('extension contracts', () => {
       assert.deepStrictEqual(first?.duplicates.map((item) => item.absPath), [existing.absPath]);
       const firstKey = duplicatePromptKeyForItem!(first!.newItem);
 
+      fs.utimesSync(addedPath, new Date(3_000), new Date(3_000));
+      const sameFile = duplicateAlertFromIndexedMd5!(index, addedPath);
+      const sameFileKey = duplicatePromptKeyForItem!(sameFile!.newItem);
+      assert.strictEqual(sameFileKey, firstKey);
+
       fs.unlinkSync(addedPath);
       fs.writeFileSync(addedPath, content);
       fs.utimesSync(addedPath, new Date(4_000), new Date(4_000));
       const second = duplicateAlertFromIndexedMd5!(index, addedPath);
-      const secondKey = duplicatePromptKeyForItem!(second!.newItem);
-      assert.notStrictEqual(secondKey, firstKey);
+      assert.strictEqual(second?.newItem.absPath, normalizeForTest(addedPath));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('detects non-image duplicate resources from indexed md5', () => {
+    const extensionModule = requireExtensionModule();
+    const duplicateAlertFromIndexedMd5 = extensionModule.duplicateAlertFromIndexedMd5 as ((index: Map<string, Map<string, GalleryAssetItem[]>>, affectedPath: string) => { newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] } | null) | undefined;
+
+    assert.ok(duplicateAlertFromIndexedMd5, 'expected extension to export duplicateAlertFromIndexedMd5 for contract tests');
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'igp-dup-audio-'));
+    try {
+      const content = Buffer.from('audio-content');
+      const md5 = crypto.createHash('md5').update(content).digest('hex');
+      const addedPath = path.join(root, 'res', 'audio', 'news', 'a.mp3');
+      fs.mkdirSync(path.dirname(addedPath), { recursive: true });
+      fs.writeFileSync(addedPath, content);
+
+      const existing = asset('mp3', 'audio', {
+        absPath: normalizeForTest(path.join(root, 'res', 'audio', 'a.mp3')),
+        relPath: 'res/audio/a.mp3',
+        resourceRootPath: normalizeForTest(path.join(root, 'res', 'audio')),
+        platform: 'flutter',
+        md5
+      });
+      const index = new Map<string, Map<string, GalleryAssetItem[]>>([
+        ['flutter', new Map([[md5, [existing]]])]
+      ]);
+
+      const alert = duplicateAlertFromIndexedMd5!(index, addedPath);
+      assert.strictEqual(alert?.newItem.mediaType, 'audio');
+      assert.strictEqual(alert?.newItem.formatFamily, 'mp3');
+      assert.deepStrictEqual(alert?.duplicates.map((item) => item.absPath), [existing.absPath]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

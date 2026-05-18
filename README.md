@@ -53,8 +53,8 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
   - built-in fallback metadata when external tools are unavailable
 - Startup indexing and duplicate detection:
   - background indexing on IDE / VSCode startup
-  - duplicate image check by `platform + md5`
-  - duplicate prompts only for files inside legal resource roots
+  - duplicate resource check by `platform + md5` for every scanned format
+  - duplicate prompts only for later manually added files inside legal resource roots
 
 ## Runtime notes
 

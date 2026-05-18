@@ -1,5 +1,6 @@
 ﻿package com.yourorg.imagegallerypreview.service
 
+import com.intellij.ide.projectView.ProjectView
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
@@ -21,6 +22,8 @@ import com.yourorg.imagegallerypreview.model.GalleryAssetItem
 import com.yourorg.imagegallerypreview.scanner.ProjectAssetScanner
 import com.yourorg.imagegallerypreview.util.AssetFileUtil
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.Locale
 import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
@@ -387,7 +390,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     private fun buildDuplicateIndex(items: List<GalleryAssetItem>): Map<String, Map<String, List<GalleryAssetItem>>> {
         return items
-            .filter { it.mediaType == "image" && it.resourceRootPath.isNotBlank() && it.md5.isNotBlank() }
+            .filter { it.resourceRootPath.isNotBlank() && it.md5.isNotBlank() }
             .groupBy { it.platform }
             .mapValues { (_, platformItems) ->
                 platformItems.groupBy { it.md5 }
@@ -407,7 +410,9 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     private fun handleChangedItemDuplicateCheck(item: GalleryAssetItem) {
         val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
-        if (item.mediaType != "image" || item.resourceRootPath.isBlank() || item.md5.isBlank()) return
+        if (item.resourceRootPath.isBlank() || item.md5.isBlank()) return
+        val file = File(normalizedPath)
+        if (!file.isFile) return
 
         val duplicates = duplicateIndex[item.platform]
             ?.get(item.md5)
@@ -419,7 +424,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
         val promptKey = duplicatePromptKeyForItem(item)
         if (!duplicatePromptedKeys.add(promptKey)) return
 
-        showDuplicateDialogAndHandle(File(item.absPath), item.platform, duplicates)
+        showDuplicateDialogAndHandle(file, item.platform, duplicates)
     }
 
     private fun handleChangedPathDuplicateCheckFast(changedPath: String) {
@@ -438,8 +443,8 @@ class GalleryIndexService(private val project: Project) : Disposable {
     private fun handlePotentialDuplicateFileFast(file: File) {
         val normalizedPath = AssetFileUtil.normalizePath(file.absolutePath)
         val platform = inferPlatformForPath(normalizedPath) ?: return
-        val family = AssetFileUtil.detectFormatFamily(file, preferVectorXml = false)
-        if (!AssetFileUtil.isSupportedFamily(family) || AssetFileUtil.mediaType(family) != "image") return
+        val family = detectDuplicateCandidateFamily(file, platform) ?: return
+        val mediaType = AssetFileUtil.mediaType(family)
 
         val md5 = AssetFileUtil.md5Hex(file)
         if (md5.isBlank()) return
@@ -458,7 +463,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
             copyToken = normalizedPath,
             md5 = md5,
             formatFamily = family,
-            mediaType = "image",
+            mediaType = mediaType,
             durationMillis = null,
             resourceRootPath = AssetFileUtil.normalizePath(file.parentFile?.absolutePath ?: ""),
             format = file.extension.lowercase(Locale.ROOT),
@@ -483,9 +488,16 @@ class GalleryIndexService(private val project: Project) : Disposable {
     private fun duplicatePromptKeyForItem(item: GalleryAssetItem): String {
         val file = File(item.absPath)
         val normalizedPath = AssetFileUtil.normalizePath(file.absolutePath)
-        val modified = if (file.exists()) file.lastModified() else item.mtime
-        val size = if (file.exists()) file.length() else 0L
-        return "${item.platform}|${item.md5}|$normalizedPath|$modified|$size"
+        val created = if (file.isFile) {
+            runCatching {
+                Files.readAttributes(file.toPath(), BasicFileAttributes::class.java)
+                    .creationTime()
+                    .toMillis()
+            }.getOrDefault(0L)
+        } else {
+            0L
+        }
+        return "${item.platform}|${item.md5}|$normalizedPath|$created"
     }
 
     private fun duplicateCandidatePath(event: com.intellij.openapi.vfs.newvfs.events.VFileEvent): String? {
@@ -504,15 +516,35 @@ class GalleryIndexService(private val project: Project) : Disposable {
         duplicatePromptedKeys.removeIf { key -> key.contains("|$normalized|") }
     }
 
+    private fun detectDuplicateCandidateFamily(file: File, platform: String): String? {
+        val normalizedPath = AssetFileUtil.normalizePath(file.absolutePath).lowercase(Locale.ROOT)
+        val preferVectorXml = platform == "android" &&
+            Regex("""/src/[^/]+/res/(drawable|mipmap)""").containsMatchIn(normalizedPath)
+        val family = AssetFileUtil.detectFormatFamily(file, preferVectorXml = preferVectorXml)
+        if (!AssetFileUtil.isSupportedFamily(family)) return null
+
+        if (platform == "android") {
+            val mediaType = AssetFileUtil.mediaType(family)
+            val isRaw = Regex("""/src/[^/]+/res/raw""").containsMatchIn(normalizedPath)
+            val isDrawableOrMipmap = Regex("""/src/[^/]+/res/(drawable|mipmap)""").containsMatchIn(normalizedPath)
+            if (isRaw && mediaType == "image") return null
+            if (isDrawableOrMipmap && mediaType != "image") return null
+            if (!isRaw && !isDrawableOrMipmap) return null
+        }
+
+        return family
+    }
+
     private fun showDuplicateDialogAndHandle(newFile: File, platform: String, duplicates: List<GalleryAssetItem>) {
         val normalizedNewPath = AssetFileUtil.normalizePath(newFile.absolutePath)
+        if (!newFile.isFile) return
         val selectedDuplicate = selectDuplicateForOpen(duplicates)
 
         val message = buildString {
-            appendLine("检测到重复图片（同平台）：$platform")
-            appendLine("新图：$normalizedNewPath")
+            appendLine("检测到重复资源（同平台）：$platform")
+            appendLine("新添加资源：$normalizedNewPath")
             appendLine()
-            appendLine("命中路径：")
+            appendLine("已存在资源路径：")
             appendLine(selectedDuplicate.absPath)
             if (duplicates.size > 1) {
                 appendLine("（共 ${duplicates.size} 个重复项，已按选择定位）")
@@ -522,8 +554,8 @@ class GalleryIndexService(private val project: Project) : Disposable {
         val result = Messages.showDialog(
             project,
             message,
-            "图片重复提示",
-            arrayOf("强制添加新图", "删除新图并定位旧图"),
+            "资源重复提示",
+            arrayOf("强制添加新资源", "删除新添加资源并定位已存在资源"),
             0,
             Messages.getWarningIcon()
         )
@@ -542,12 +574,12 @@ class GalleryIndexService(private val project: Project) : Disposable {
         }
 
         if (!deleted) {
-            Messages.showErrorDialog(project, "无法删除新图片，请手动处理：$normalizedNewPath", "删除失败")
+            Messages.showErrorDialog(project, "无法删除新添加资源，请手动处理：$normalizedNewPath", "删除失败")
             return
         }
 
         clearDuplicatePromptForPath(normalizedNewPath)
-        openAssetInEditor(selectedDuplicate.absPath)
+        openAssetInProject(selectedDuplicate.absPath)
         syncAsync()
     }
 
@@ -557,8 +589,8 @@ class GalleryIndexService(private val project: Project) : Disposable {
         val options = duplicates.map { it.absPath }.toTypedArray()
         val selectedIndex = Messages.showChooseDialog(
             project,
-            "检测到多个重复图片，请选择要定位的旧图：",
-            "选择重复图片",
+            "检测到多个重复资源，请选择要定位的已存在资源：",
+            "选择重复资源",
             null,
             options,
             options.first()
@@ -571,10 +603,11 @@ class GalleryIndexService(private val project: Project) : Disposable {
         return duplicates.first()
     }
 
-    private fun openAssetInEditor(absPath: String) {
+    private fun openAssetInProject(absPath: String) {
         val ioFile = File(absPath)
         val virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(ioFile) ?: return
         FileEditorManager.getInstance(project).openFile(virtualFile, true)
+        ProjectView.getInstance(project).select(virtualFile, virtualFile, false)
     }
 
     private fun isInterestingPath(path: String): Boolean {
