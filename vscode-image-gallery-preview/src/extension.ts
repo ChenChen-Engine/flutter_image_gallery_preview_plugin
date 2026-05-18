@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { Worker } from 'worker_threads';
 import { extractMediaInfo, seedMediaInfoCache } from './mediaMetadata';
@@ -9,7 +10,6 @@ import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
 const SCAN_TIMEOUT_MS = 120_000;
 const SCAN_STALE_MS = 12_000;
-const DUPLICATE_PROMPT_DEBOUNCE_MS = 1_500;
 
 export interface LoadingStateMessage {
   count?: number;
@@ -20,6 +20,7 @@ export interface LoadingStateMessage {
   heartbeat?: boolean;
   lastHeartbeatMillis?: number;
   loading: boolean;
+  loadingSeq?: number;
   message: string;
   partialCount?: number;
   phase?: string;
@@ -117,8 +118,9 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private afterRefreshQueue: Array<(items: GalleryAssetItem[]) => Promise<void> | void> = [];
   private cachedItems: GalleryAssetItem[] = [];
   private duplicateIndex: Map<PlatformType, Map<string, GalleryAssetItem[]>> = new Map();
-  private duplicatePromptedAt = new Map<string, number>();
+  private duplicatePromptedKeys = new Set<string>();
   private infoCache = new Map<string, MediaMetadataInfo>();
+  private loadingSeq = 0;
   private readonly output = vscode.window.createOutputChannel('Image Gallery Preview');
   private refreshPending = false;
   private refreshPendingForce = false;
@@ -179,6 +181,8 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
         this.refreshPending = false;
         this.refreshPendingForce = false;
         await this.startRefresh(pendingForce, undefined);
+      } else {
+        await this.postLoadingState(false, this.cachedItems.length ? `Updated ${new Date().toLocaleTimeString()}` : '');
       }
     }
   }
@@ -365,6 +369,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     const payload = typeof progressOrLoading === 'boolean'
       ? ({ type: 'loadingState', loading: progressOrLoading, message } satisfies LoadingStateMessage)
       : toLoadingStateMessage(progressOrLoading);
+    payload.loadingSeq = ++this.loadingSeq;
     await this.view?.webview.postMessage(payload);
   }
 
@@ -384,14 +389,12 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleChangedFileDuplicateCheck(changedPath: string, items: GalleryAssetItem[]): Promise<void> {
-    const alert = duplicateAlertForAffectedPath(items, changedPath);
+    const alert = duplicateAlertForAffectedPath(items, changedPath) ?? duplicateAlertFromIndexedMd5(this.duplicateIndex, changedPath);
     if (!alert) return;
 
-    const promptKey = `${alert.newItem.platform}|${alert.newItem.md5}|${normalizePath(alert.newItem.absPath)}|${alert.newItem.mtime}`;
-    const now = Date.now();
-    const lastPromptedAt = this.duplicatePromptedAt.get(promptKey) ?? 0;
-    if (now - lastPromptedAt < DUPLICATE_PROMPT_DEBOUNCE_MS) return;
-    this.duplicatePromptedAt.set(promptKey, now);
+    const promptKey = duplicatePromptKeyForItem(alert.newItem);
+    if (this.duplicatePromptedKeys.has(promptKey)) return;
+    this.duplicatePromptedKeys.add(promptKey);
 
     await this.showDuplicateDialogAndHandle(alert.newItem, alert.duplicates);
   }
@@ -439,7 +442,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
     try {
       await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { recursive: false, useTrash: false });
-      clearDuplicatePromptKeysForPath(this.duplicatePromptedAt, absPath);
+      clearDuplicatePromptKeysForPath(this.duplicatePromptedKeys, absPath);
       await revealResourceByPath(selected.absPath);
       await this.sync();
     } catch {
@@ -468,19 +471,21 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
       watcher.onDidCreate((uri) => {
         if (isInterestingFsPath(uri.fsPath)) {
+          void this.handleChangedFileDuplicateCheck(uri.fsPath, this.cachedItems);
           void this.sync((items) => this.handleChangedFileDuplicateCheck(uri.fsPath, items));
         }
       });
 
       const onChange = (uri: vscode.Uri) => {
         if (isInterestingFsPath(uri.fsPath)) {
+          void this.handleChangedFileDuplicateCheck(uri.fsPath, this.cachedItems);
           void this.sync((items) => this.handleChangedFileDuplicateCheck(uri.fsPath, items));
         }
       };
       watcher.onDidChange(onChange);
       watcher.onDidDelete((uri) => {
         if (isInterestingFsPath(uri.fsPath)) {
-          clearDuplicatePromptKeysForPath(this.duplicatePromptedAt, uri.fsPath);
+          clearDuplicatePromptKeysForPath(this.duplicatePromptedKeys, uri.fsPath);
           void this.sync();
         }
       });
@@ -548,10 +553,82 @@ export function duplicateAlertForAffectedPath(
   return { newItem, duplicates };
 }
 
-function clearDuplicatePromptKeysForPath(promptedAt: Map<string, number>, absPath: string): void {
+export function duplicateAlertFromIndexedMd5(
+  index: Map<PlatformType, Map<string, GalleryAssetItem[]>>,
+  affectedPath: string
+): { newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] } | null {
+  const normalizedPath = normalizePath(affectedPath);
+  const stat = safeStat(affectedPath);
+  if (!stat?.isFile()) return null;
+
+  const platform = inferPlatformForPath(normalizedPath);
+  if (!platform) return null;
+
+  const md5 = md5Hex(affectedPath);
+  if (!md5) return null;
+
+  const duplicates = index.get(platform)?.get(md5)
+    ?.filter((item) => normalizePath(item.absPath) !== normalizedPath) ?? [];
+  if (!duplicates.length) return null;
+
+  const extension = path.extname(affectedPath).replace(/^\./, '').toLowerCase() as GalleryAssetItem['formatFamily'];
+  const newItem: GalleryAssetItem = {
+    ...duplicates[0],
+    absPath: normalizedPath,
+    relPath: normalizedPath,
+    copyToken: normalizedPath,
+    md5,
+    formatFamily: extension,
+    format: extension,
+    mediaType: 'image',
+    durationMillis: null,
+    mtime: stat.mtimeMs,
+    width: null,
+    height: null,
+    imageInfo: undefined,
+    mediaInfo: undefined
+  };
+
+  return { newItem, duplicates };
+}
+
+export function duplicatePromptKeyForItem(item: GalleryAssetItem): string {
+  const normalizedPath = normalizePath(item.absPath);
+  const stat = safeStat(normalizedPath);
+  const created = stat ? Math.round(stat.birthtimeMs) : 0;
+  const modified = stat ? Math.round(stat.mtimeMs) : Math.round(item.mtime);
+  const size = stat ? stat.size : 0;
+  return `${item.platform}|${item.md5}|${normalizedPath}|${created}|${modified}|${size}`;
+}
+
+function clearDuplicatePromptKeysForPath(promptedKeys: Set<string>, absPath: string): void {
   const marker = `|${normalizePath(absPath)}|`;
-  for (const key of promptedAt.keys()) {
-    if (key.includes(marker)) promptedAt.delete(key);
+  for (const key of promptedKeys) {
+    if (key.includes(marker)) promptedKeys.delete(key);
+  }
+}
+
+function inferPlatformForPath(filePath: string): PlatformType | null {
+  const normalized = normalizePath(filePath).toLowerCase();
+  if (normalized.includes('/ios/')) return 'ios';
+  if (/\/src\/[^/]+\/res\/(?:drawable|mipmap|raw)/.test(normalized)) return 'android';
+  if (normalized.includes('/assets/') || normalized.includes('/res/')) return 'flutter';
+  return null;
+}
+
+function md5Hex(filePath: string): string {
+  try {
+    return crypto.createHash('md5').update(fs.readFileSync(filePath)).digest('hex');
+  } catch {
+    return '';
+  }
+}
+
+function safeStat(filePath: string): fs.Stats | null {
+  try {
+    return fs.statSync(filePath);
+  } catch {
+    return null;
   }
 }
 

@@ -66,7 +66,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
     @Volatile
     private var duplicateIndex: Map<String, Map<String, List<GalleryAssetItem>>> = emptyMap()
 
-    private val duplicatePromptedAt = ConcurrentHashMap<String, Long>()
+    private val duplicatePromptedKeys = ConcurrentHashMap.newKeySet<String>()
     private val pendingAfterRefreshCallbacks = CopyOnWriteArrayList<() -> Unit>()
 
     @Volatile
@@ -98,6 +98,9 @@ class GalleryIndexService(private val project: Project) : Disposable {
                 if (changedPaths.isEmpty() && !deleted) return
 
                 if (changedPaths.isNotEmpty()) {
+                    changedPaths.forEach { path ->
+                        handleChangedPathDuplicateCheckFast(path)
+                    }
                     syncAsync {
                         changedPaths.forEach { path ->
                             handleChangedFileDuplicateCheck(path)
@@ -413,13 +416,76 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
         if (duplicates.isEmpty()) return
 
-        val promptKey = "${item.platform}|${item.md5}|$normalizedPath|${item.mtime}"
-        val now = System.currentTimeMillis()
-        val lastPromptedAt = duplicatePromptedAt[promptKey] ?: 0L
-        if (now - lastPromptedAt < DUPLICATE_PROMPT_DEBOUNCE_MS) return
-        duplicatePromptedAt[promptKey] = now
+        val promptKey = duplicatePromptKeyForItem(item)
+        if (!duplicatePromptedKeys.add(promptKey)) return
 
         showDuplicateDialogAndHandle(File(item.absPath), item.platform, duplicates)
+    }
+
+    private fun handleChangedPathDuplicateCheckFast(changedPath: String) {
+        val file = File(AssetFileUtil.normalizePath(changedPath))
+        val candidates = when {
+            file.isFile -> sequenceOf(file)
+            file.isDirectory -> file.walkTopDown().filter { it.isFile }.take(MAX_FAST_DUPLICATE_SCAN_FILES)
+            else -> emptySequence()
+        }
+
+        candidates.forEach { candidate ->
+            handlePotentialDuplicateFileFast(candidate)
+        }
+    }
+
+    private fun handlePotentialDuplicateFileFast(file: File) {
+        val normalizedPath = AssetFileUtil.normalizePath(file.absolutePath)
+        val platform = inferPlatformForPath(normalizedPath) ?: return
+        val family = AssetFileUtil.detectFormatFamily(file, preferVectorXml = false)
+        if (!AssetFileUtil.isSupportedFamily(family) || AssetFileUtil.mediaType(family) != "image") return
+
+        val md5 = AssetFileUtil.md5Hex(file)
+        if (md5.isBlank()) return
+
+        val duplicates = duplicateIndex[platform]
+            ?.get(md5)
+            .orEmpty()
+            .filter { duplicate -> AssetFileUtil.normalizePath(duplicate.absPath) != normalizedPath }
+
+        if (duplicates.isEmpty()) return
+
+        val template = duplicates.first()
+        val item = template.copy(
+            absPath = normalizedPath,
+            relPath = normalizedPath,
+            copyToken = normalizedPath,
+            md5 = md5,
+            formatFamily = family,
+            mediaType = "image",
+            durationMillis = null,
+            resourceRootPath = AssetFileUtil.normalizePath(file.parentFile?.absolutePath ?: ""),
+            format = file.extension.lowercase(Locale.ROOT),
+            width = null,
+            height = null,
+            mtime = file.lastModified(),
+            kind = AssetFileUtil.assetKind(family),
+            imageInfo = null,
+            mediaInfo = null
+        )
+
+        val promptKey = duplicatePromptKeyForItem(item)
+        if (!duplicatePromptedKeys.add(promptKey)) return
+
+        invokeOnEdt {
+            if (file.exists()) {
+                showDuplicateDialogAndHandle(file, platform, duplicates)
+            }
+        }
+    }
+
+    private fun duplicatePromptKeyForItem(item: GalleryAssetItem): String {
+        val file = File(item.absPath)
+        val normalizedPath = AssetFileUtil.normalizePath(file.absolutePath)
+        val modified = if (file.exists()) file.lastModified() else item.mtime
+        val size = if (file.exists()) file.length() else 0L
+        return "${item.platform}|${item.md5}|$normalizedPath|$modified|$size"
     }
 
     private fun duplicateCandidatePath(event: com.intellij.openapi.vfs.newvfs.events.VFileEvent): String? {
@@ -435,7 +501,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     private fun clearDuplicatePromptForPath(path: String) {
         val normalized = AssetFileUtil.normalizePath(path)
-        duplicatePromptedAt.keys.removeIf { key -> key.contains("|$normalized|") }
+        duplicatePromptedKeys.removeIf { key -> key.contains("|$normalized|") }
     }
 
     private fun showDuplicateDialogAndHandle(newFile: File, platform: String, duplicates: List<GalleryAssetItem>) {
@@ -596,10 +662,20 @@ class GalleryIndexService(private val project: Project) : Disposable {
             path.endsWith(".xml")
     }
 
+    private fun inferPlatformForPath(path: String): String? {
+        val normalizedPath = path.replace('\\', '/').lowercase(Locale.ROOT)
+        return when {
+            normalizedPath.contains("/ios/") -> "ios"
+            Regex("""/src/[^/]+/res/(drawable|mipmap|raw)""").containsMatchIn(normalizedPath) -> "android"
+            normalizedPath.contains("/assets/") || normalizedPath.contains("/res/") -> "flutter"
+            else -> null
+        }
+    }
+
     companion object {
         private val MAX_METADATA_PARALLELISM = minOf(6, maxOf(2, Runtime.getRuntime().availableProcessors()))
         private const val METADATA_ITEM_TIMEOUT_MS = 15_000L
-        private const val DUPLICATE_PROMPT_DEBOUNCE_MS = 1_500L
+        private const val MAX_FAST_DUPLICATE_SCAN_FILES = 64
 
         fun getInstance(project: Project): GalleryIndexService = project.getService(GalleryIndexService::class.java)
     }

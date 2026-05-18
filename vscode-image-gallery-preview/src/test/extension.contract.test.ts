@@ -1,4 +1,8 @@
 import * as assert from 'assert';
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import Module = require('module');
 import { GalleryAssetItem, MediaMetadataInfo } from '../shared/types';
 
@@ -74,6 +78,50 @@ suite('extension contracts', () => {
     assert.strictEqual(alert?.newItem.absPath, added.absPath);
     assert.deepStrictEqual(alert?.duplicates.map((item) => item.absPath), [existing.absPath]);
     assert.strictEqual(duplicateAlertForAffectedPath!([existing, added, otherPlatform], 'C:/demo/res/image/missing.png'), null);
+  });
+
+  test('detects repeated duplicate copies from indexed md5 without waiting for rescan', () => {
+    const extensionModule = requireExtensionModule();
+    const duplicateAlertFromIndexedMd5 = extensionModule.duplicateAlertFromIndexedMd5 as ((index: Map<string, Map<string, GalleryAssetItem[]>>, affectedPath: string) => { newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] } | null) | undefined;
+    const duplicatePromptKeyForItem = extensionModule.duplicatePromptKeyForItem as ((item: GalleryAssetItem) => string) | undefined;
+
+    assert.ok(duplicateAlertFromIndexedMd5, 'expected extension to export duplicateAlertFromIndexedMd5 for contract tests');
+    assert.ok(duplicatePromptKeyForItem, 'expected extension to export duplicatePromptKeyForItem for contract tests');
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'igp-dup-'));
+    try {
+      const content = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
+      const md5 = crypto.createHash('md5').update(content).digest('hex');
+      const addedPath = path.join(root, 'res', 'image', 'news', 'a.png');
+      fs.mkdirSync(path.dirname(addedPath), { recursive: true });
+
+      const existing = asset('png', 'image', {
+        absPath: normalizeForTest(path.join(root, 'res', 'image', 'a.png')),
+        relPath: 'res/image/a.png',
+        resourceRootPath: normalizeForTest(path.join(root, 'res', 'image')),
+        platform: 'flutter',
+        md5
+      });
+      const index = new Map<string, Map<string, GalleryAssetItem[]>>([
+        ['flutter', new Map([[md5, [existing]]])]
+      ]);
+
+      fs.writeFileSync(addedPath, content);
+      fs.utimesSync(addedPath, new Date(2_000), new Date(2_000));
+      const first = duplicateAlertFromIndexedMd5!(index, addedPath);
+      assert.strictEqual(first?.newItem.absPath, normalizeForTest(addedPath));
+      assert.deepStrictEqual(first?.duplicates.map((item) => item.absPath), [existing.absPath]);
+      const firstKey = duplicatePromptKeyForItem!(first!.newItem);
+
+      fs.unlinkSync(addedPath);
+      fs.writeFileSync(addedPath, content);
+      fs.utimesSync(addedPath, new Date(4_000), new Date(4_000));
+      const second = duplicateAlertFromIndexedMd5!(index, addedPath);
+      const secondKey = duplicatePromptKeyForItem!(second!.newItem);
+      assert.notStrictEqual(secondKey, firstKey);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('builds structured loading state payloads from worker progress', () => {
@@ -227,6 +275,10 @@ function asset(
     kind: formatFamily,
     ...overrides
   };
+}
+
+function normalizeForTest(value: string): string {
+  return value.replace(/\\/g, '/');
 }
 
 function requireExtensionModule(): Record<string, unknown> {

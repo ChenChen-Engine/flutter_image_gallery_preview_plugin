@@ -89,7 +89,8 @@
     animationUpdateTimer: 0,
     filterTimer: 0,
     scrollTimer: 0,
-    toastTimer: 0
+    toastTimer: 0,
+    loadingSeq: -1
   };
 
   function loadCollapsedKeys() {
@@ -1486,6 +1487,8 @@
     }
 
     if (msg?.type === 'loadingState') {
+      if (Number.isFinite(msg.loadingSeq) && msg.loadingSeq < state.loadingSeq) return;
+      if (Number.isFinite(msg.loadingSeq)) state.loadingSeq = msg.loadingSeq;
       setLoading(!!msg.loading, msg.message || 'Indexing assets...', msg);
       if (!msg.loading && normalizeText(msg.message).includes('failed')) {
         renderScanFailure(msg.message || '扫描失败');
