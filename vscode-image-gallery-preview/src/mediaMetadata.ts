@@ -3,12 +3,12 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import exifReader from 'exif-reader';
-import sharp from 'sharp';
 import { GalleryAssetItem, ImageInfo, MediaMetadataInfo, MediaType, MetadataRow, MetadataSection } from './shared/types';
 import { resolveMediaInfoExecutable } from './mediaInfoTool';
 
 const execFileAsync = promisify(execFile);
 const MEDIAINFO_DOWNLOAD_URL = 'https://mediaarea.net/en/MediaInfo/Download/Windows';
+let cachedSharp: any | null | undefined;
 
 export interface ResolveIndexedMediaInfoDependencies {
   loadBuiltIn: (item: GalleryAssetItem) => Promise<MediaMetadataInfo>;
@@ -463,6 +463,9 @@ async function extractImageInfo(absPath: string): Promise<ImageInfo> {
   if (!stat) return unknown;
 
   try {
+    const sharp = loadSharp();
+    if (!sharp) return unknown;
+
     const image = sharp(absPath, { failOnError: false });
     const metadata = await image.metadata();
 
@@ -509,6 +512,16 @@ async function extractImageInfo(absPath: string): Promise<ImageInfo> {
   } catch {
     return unknown;
   }
+}
+
+function loadSharp(): any | null {
+  if (cachedSharp !== undefined) return cachedSharp;
+  try {
+    cachedSharp = require('sharp');
+  } catch {
+    cachedSharp = null;
+  }
+  return cachedSharp;
 }
 
 function mediaTypeFromPath(absPath: string): MediaType {

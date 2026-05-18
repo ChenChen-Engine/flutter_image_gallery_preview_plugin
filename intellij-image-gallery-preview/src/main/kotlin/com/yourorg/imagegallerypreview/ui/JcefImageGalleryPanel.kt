@@ -35,7 +35,6 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import javax.swing.JButton
 import javax.swing.JPanel
 import javax.swing.SwingConstants
 
@@ -50,6 +49,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     private val messageQuery: JBCefJSQuery?
     private val mediaServer: LocalMediaStreamServer?
     private val videoThumbnailProvider: VideoThumbnailProvider?
+    private val fallbackPanel: ImageGalleryPanel?
     private val latestItems = mutableListOf<GalleryAssetItem>()
 
     @Volatile
@@ -73,7 +73,8 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             messageQuery = null
             mediaServer = null
             videoThumbnailProvider = null
-            add(createUnsupportedPanel(), BorderLayout.CENTER)
+            fallbackPanel = ImageGalleryPanel(project)
+            add(fallbackPanel, BorderLayout.CENTER)
         } else {
             browser = JBCefBrowser()
             messageQuery = JBCefJSQuery.create(browser)
@@ -81,6 +82,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             val thumbnails = VideoThumbnailProvider(logger)
             mediaServer = server
             videoThumbnailProvider = thumbnails
+            fallbackPanel = null
             Disposer.register(this, browser)
             Disposer.register(this, messageQuery)
             Disposer.register(this, server)
@@ -102,8 +104,10 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             }
         }
 
-        service.addListener(itemsListener)
-        service.addStatusListener(statusListener)
+        if (browser != null) {
+            service.addListener(itemsListener)
+            service.addStatusListener(statusListener)
+        }
     }
 
     fun refreshNow() {
@@ -115,6 +119,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     }
 
     override fun dispose() {
+        fallbackPanel?.disposePanel()
         service.removeListener(itemsListener)
         service.removeStatusListener(statusListener)
     }
@@ -131,8 +136,14 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             "ready" -> {
                 browserReady = true
                 contentLayout.show(contentPanel, "browser")
-                sendLoadingStateIfReady(service.currentStatus())
-                sendAssetsIfReady()
+                val status = service.currentStatus()
+                if (status.state == GalleryIndexService.IndexState.SUCCESS && latestItems.isNotEmpty()) {
+                    sendRenderingState()
+                    sendAssetsIfReady(hideLoadingAfterSend = true)
+                } else {
+                    sendLoadingStateIfReady(status)
+                    sendAssetsIfReady()
+                }
             }
 
             "sync" -> service.syncAsync()
@@ -160,7 +171,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         return null
     }
 
-    private fun sendAssetsIfReady() {
+    private fun sendAssetsIfReady(hideLoadingAfterSend: Boolean = false) {
         if (!browserReady) return
 
         val snapshot = latestItems.toList()
@@ -180,26 +191,50 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             }
 
             sendToWeb(mapOf("type" to "assets", "items" to assets))
+            if (hideLoadingAfterSend) {
+                sendToWeb(loadingPayload(service.currentStatus(), loading = false))
+            }
         }
     }
 
     private fun sendLoadingStateIfReady(status: GalleryIndexService.IndexStatus) {
         updateHostLoading(status)
         if (!browserReady) return
+        if (status.state == GalleryIndexService.IndexState.SUCCESS && latestItems.isNotEmpty()) {
+            sendRenderingState()
+            sendAssetsIfReady(hideLoadingAfterSend = true)
+            return
+        }
+        sendToWeb(loadingPayload(status, loading = status.state == GalleryIndexService.IndexState.INDEXING))
+    }
+
+    private fun sendRenderingState() {
         sendToWeb(
             mapOf(
                 "type" to "loadingState",
-                "loading" to (status.state == GalleryIndexService.IndexState.INDEXING),
-                "message" to status.message,
-                "phase" to status.phase,
-                "indexedCount" to status.indexedCount,
-                "metadataCount" to status.metadataCount,
-                "currentPath" to status.currentPath,
-                "fallbackSource" to status.fallbackSource,
-                "elapsedMillis" to status.elapsedMillis,
-                "workerStatus" to status.workerStatus,
-                "diagnostic" to status.diagnostic
+                "loading" to true,
+                "message" to "Rendering assets...",
+                "phase" to "rendering",
+                "indexedCount" to latestItems.size,
+                "metadataCount" to latestItems.size,
+                "workerStatus" to "rendering"
             )
+        )
+    }
+
+    private fun loadingPayload(status: GalleryIndexService.IndexStatus, loading: Boolean): Map<String, Any?> {
+        return mapOf(
+            "type" to "loadingState",
+            "loading" to loading,
+            "message" to status.message,
+            "phase" to status.phase,
+            "indexedCount" to status.indexedCount,
+            "metadataCount" to status.metadataCount,
+            "currentPath" to status.currentPath,
+            "fallbackSource" to status.fallbackSource,
+            "elapsedMillis" to status.elapsedMillis,
+            "workerStatus" to status.workerStatus,
+            "diagnostic" to status.diagnostic
         )
     }
 
@@ -338,25 +373,6 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         }
         hostLoadingLabel.font = hostLoadingLabel.font.deriveFont(Font.BOLD, 15f)
         panel.add(hostLoadingLabel, BorderLayout.CENTER)
-        return panel
-    }
-
-    private fun createUnsupportedPanel(): JPanel {
-        val panel = JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(28)
-            background = JBColor.PanelBackground
-        }
-        val label = JBLabel(
-            "<html><div style='text-align:center;'>JCEF is not available in this IDE runtime.<br/>Image Gallery Preview requires JCEF Web UI support.</div></html>",
-            SwingConstants.CENTER
-        ).apply {
-            font = font.deriveFont(Font.BOLD, 15f)
-        }
-        val refresh = JButton("Refresh Index").apply {
-            addActionListener { refreshNow() }
-        }
-        panel.add(label, BorderLayout.CENTER)
-        panel.add(refresh, BorderLayout.SOUTH)
         return panel
     }
 

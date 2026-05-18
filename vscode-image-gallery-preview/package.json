@@ -58,7 +58,8 @@
   },
   "scripts": {
     "sync-web": "node ./scripts/sync-web.js",
-    "compile": "npm run sync-web && tsc -p ./",
+    "clean-dist": "node ./scripts/clean-dist.js",
+    "compile": "npm run clean-dist && npm run sync-web && tsc -p ./",
     "watch": "tsc -watch -p ./",
     "prepackage": "npm run compile",
     "package": "node ./scripts/package.js",
