@@ -260,7 +260,6 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private async performRefresh(forceReindex: boolean): Promise<void> {
     const started = Date.now();
     const operation = forceReindex ? 'refresh' : 'sync';
-    const previousItems = this.cachedItems;
     this.output.appendLine(`[${operation}] starting workspace index`);
     if (forceReindex) this.infoCache.clear();
     await this.postLoadingState(true, forceReindex ? 'Reindexing assets...' : 'Syncing assets...');
@@ -328,7 +327,6 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       console.info(`[Image Gallery Preview] Indexed ${items.length} assets in ${elapsed}ms`);
       this.output.appendLine(`[${operation}] indexed ${items.length} assets in ${elapsed}ms`);
       await this.postLoadingState(false, `Updated ${new Date().toLocaleTimeString()}`);
-      await this.handleDuplicateAlerts(previousItems, items);
 
       const callbacks = this.afterRefreshQueue.splice(0, this.afterRefreshQueue.length);
       for (const callback of callbacks) {
@@ -383,37 +381,15 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     return index;
   }
 
-  private duplicateAlertsFor(previousItems: GalleryAssetItem[], currentItems: GalleryAssetItem[]): Array<{ newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] }> {
-    const previousByPath = new Map(previousItems.map((item) => [normalizePath(item.absPath), item]));
-    const currentIndex = this.buildDuplicateIndex(currentItems);
-    const alerts: Array<{ newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] }> = [];
+  private async handleChangedFileDuplicateCheck(changedPath: string, items: GalleryAssetItem[]): Promise<void> {
+    const alert = duplicateAlertForAffectedPath(items, changedPath);
+    if (!alert) return;
 
-    for (const platformMap of currentIndex.values()) {
-      for (const group of platformMap.values()) {
-        if (group.length < 2) continue;
-        const key = duplicateGroupKey(group);
-        if (this.duplicatePromptedKeys.has(key)) continue;
+    const promptKey = `${alert.newItem.platform}|${alert.newItem.md5}|${normalizePath(alert.newItem.absPath)}|${alert.newItem.mtime}`;
+    if (this.duplicatePromptedKeys.has(promptKey)) return;
+    this.duplicatePromptedKeys.add(promptKey);
 
-        const changedItems = group.filter((item) => {
-          const previous = previousByPath.get(normalizePath(item.absPath));
-          return !previous || previous.md5 !== item.md5 || previous.mtime !== item.mtime;
-        });
-        const newItem = newestItem(changedItems.length ? changedItems : group);
-        const duplicates = group.filter((item) => normalizePath(item.absPath) !== normalizePath(newItem.absPath));
-        if (!duplicates.length) continue;
-
-        this.duplicatePromptedKeys.add(key);
-        alerts.push({ newItem, duplicates });
-      }
-    }
-
-    return alerts;
-  }
-
-  private async handleDuplicateAlerts(previousItems: GalleryAssetItem[], currentItems: GalleryAssetItem[]): Promise<void> {
-    for (const alert of this.duplicateAlertsFor(previousItems, currentItems)) {
-      await this.showDuplicateDialogAndHandle(alert.newItem, alert.duplicates);
-    }
+    await this.showDuplicateDialogAndHandle(alert.newItem, alert.duplicates);
   }
 
   private async showDuplicateDialogAndHandle(createdItem: GalleryAssetItem, duplicates: GalleryAssetItem[]): Promise<void> {
@@ -427,7 +403,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
           item
         })),
         {
-          title: 'Choose the existing duplicate to reveal',
+          title: '检测到多个重复图片，请选择要定位的旧图',
           canPickMany: false,
           ignoreFocusOut: true
         }
@@ -437,25 +413,32 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       selected = picked.item;
     }
 
+    const messageLines = [
+      `检测到重复图片（同平台）：${createdItem.platform}`,
+      `新图：${absPath}`,
+      '',
+      '命中路径：',
+      selected.absPath
+    ];
+    if (duplicates.length > 1) {
+      messageLines.push(`（共 ${duplicates.length} 个重复项，已按选择定位）`);
+    }
+
     const choice = await vscode.window.showWarningMessage(
-      [
-        `Detected duplicate image on platform ${createdItem.platform}.`,
-        `New: ${absPath}`,
-        `Existing: ${selected.absPath}`
-      ].join('\n'),
+      messageLines.join('\n'),
       { modal: true },
-      'Keep new file',
-      'Delete new file and reveal existing'
+      '强制添加新图',
+      '删除新图并定位旧图'
     );
 
-    if (choice !== 'Delete new file and reveal existing') return;
+    if (choice !== '删除新图并定位旧图') return;
 
     try {
       await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { recursive: false, useTrash: false });
       await revealResourceByPath(selected.absPath);
       await this.sync();
     } catch {
-      await vscode.window.showErrorMessage(`Failed to delete duplicate file: ${absPath}`);
+      await vscode.window.showErrorMessage(`无法删除新图片，请手动处理：${absPath}`);
     }
   }
 
@@ -479,14 +462,20 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       const watcher = vscode.workspace.createFileSystemWatcher(pattern);
 
       watcher.onDidCreate((uri) => {
-        if (isInterestingFsPath(uri.fsPath)) void this.sync();
+        if (isInterestingFsPath(uri.fsPath)) {
+          void this.sync((items) => this.handleChangedFileDuplicateCheck(uri.fsPath, items));
+        }
       });
 
       const onChange = (uri: vscode.Uri) => {
-        if (isInterestingFsPath(uri.fsPath)) void this.sync();
+        if (isInterestingFsPath(uri.fsPath)) {
+          void this.sync((items) => this.handleChangedFileDuplicateCheck(uri.fsPath, items));
+        }
       };
       watcher.onDidChange(onChange);
-      watcher.onDidDelete(onChange);
+      watcher.onDidDelete((uri) => {
+        if (isInterestingFsPath(uri.fsPath)) void this.sync();
+      });
       this.watchers.push(watcher);
     }
   }
@@ -531,15 +520,24 @@ export async function previewUriForItem(webview: vscode.Webview, item: GalleryAs
   return webview.asWebviewUri(vscode.Uri.file(item.absPath)).toString();
 }
 
-function duplicateGroupKey(group: GalleryAssetItem[]): string {
-  return group
-    .map((item) => `${item.platform}|${item.md5}|${normalizePath(item.absPath)}|${item.mtime}`)
-    .sort()
-    .join('\n');
-}
+export function duplicateAlertForAffectedPath(
+  items: GalleryAssetItem[],
+  affectedPath: string
+): { newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] } | null {
+  const normalizedPath = normalizePath(affectedPath);
+  const newItem = items.find((item) => normalizePath(item.absPath) === normalizedPath);
+  if (!newItem || newItem.mediaType !== 'image' || !newItem.resourceRootPath || !newItem.md5) return null;
 
-function newestItem(items: GalleryAssetItem[]): GalleryAssetItem {
-  return items.reduce((latest, item) => (item.mtime > latest.mtime ? item : latest), items[0]);
+  const duplicates = items.filter((item) =>
+    item.mediaType === 'image' &&
+    item.resourceRootPath &&
+    item.platform === newItem.platform &&
+    item.md5 === newItem.md5 &&
+    normalizePath(item.absPath) !== normalizedPath
+  );
+
+  if (!duplicates.length) return null;
+  return { newItem, duplicates };
 }
 
 function readSmallTextFile(absPath: string): string | null {

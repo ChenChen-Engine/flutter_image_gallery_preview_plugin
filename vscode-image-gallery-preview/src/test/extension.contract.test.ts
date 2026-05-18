@@ -40,6 +40,42 @@ suite('extension contracts', () => {
     assert.strictEqual(cache.get('C:/demo/app/src/main/res/drawable/icon.png')?.sections[0].title, 'Image');
   });
 
+  test('detects duplicate images only for the affected file path', () => {
+    const extensionModule = requireExtensionModule();
+    const duplicateAlertForAffectedPath = extensionModule.duplicateAlertForAffectedPath as ((items: GalleryAssetItem[], affectedPath: string) => { newItem: GalleryAssetItem; duplicates: GalleryAssetItem[] } | null) | undefined;
+
+    assert.ok(duplicateAlertForAffectedPath, 'expected extension to export duplicateAlertForAffectedPath for contract tests');
+
+    const existing = asset('png', 'image', {
+      absPath: 'C:/demo/res/image/a.png',
+      relPath: 'res/image/a.png',
+      resourceRootPath: 'C:/demo/res/image',
+      md5: 'same-md5',
+      mtime: 1
+    });
+    const added = asset('png', 'image', {
+      absPath: 'C:/demo/res/image/news/a.png',
+      relPath: 'res/image/news/a.png',
+      resourceRootPath: 'C:/demo/res/image',
+      md5: 'same-md5',
+      mtime: 2
+    });
+    const otherPlatform = asset('png', 'image', {
+      absPath: 'C:/demo/ios/Runner/Assets.xcassets/a.imageset/a.png',
+      relPath: 'ios/Runner/Assets.xcassets/a.imageset/a.png',
+      resourceRootPath: 'C:/demo/ios/Runner/Assets.xcassets/a.imageset',
+      platform: 'ios',
+      md5: 'same-md5',
+      mtime: 3
+    });
+
+    assert.strictEqual(duplicateAlertForAffectedPath!([existing, added, otherPlatform], existing.absPath)?.newItem.absPath, existing.absPath);
+    const alert = duplicateAlertForAffectedPath!([existing, added, otherPlatform], added.absPath);
+    assert.strictEqual(alert?.newItem.absPath, added.absPath);
+    assert.deepStrictEqual(alert?.duplicates.map((item) => item.absPath), [existing.absPath]);
+    assert.strictEqual(duplicateAlertForAffectedPath!([existing, added, otherPlatform], 'C:/demo/res/image/missing.png'), null);
+  });
+
   test('builds structured loading state payloads from worker progress', () => {
     const extensionModule = requireExtensionModule();
     const toLoadingStateMessage = extensionModule.toLoadingStateMessage as ((progress: {

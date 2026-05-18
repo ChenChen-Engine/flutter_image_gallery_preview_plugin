@@ -64,6 +64,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
     private var duplicateIndex: Map<String, Map<String, List<GalleryAssetItem>>> = emptyMap()
 
     private val duplicatePromptedKeys = ConcurrentHashMap.newKeySet<String>()
+    private val pendingAfterRefreshCallbacks = CopyOnWriteArrayList<() -> Unit>()
 
     @Volatile
     private var lastStatus: IndexStatus = IndexStatus(IndexState.IDLE, "Idle")
@@ -76,14 +77,28 @@ class GalleryIndexService(private val project: Project) : Disposable {
         val connection = project.messageBus.connect(this)
         connection.subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
             override fun after(events: List<com.intellij.openapi.vfs.newvfs.events.VFileEvent>) {
-                val relevant = events.any { event ->
-                    (event is VFileCreateEvent || event is VFileDeleteEvent || event is VFileContentChangeEvent) &&
-                        isInterestingPath(event.path)
+                val changedPaths = events
+                    .filter { event ->
+                        (event is VFileCreateEvent || event is VFileContentChangeEvent) &&
+                            isInterestingPath(event.path)
+                    }
+                    .map { event -> AssetFileUtil.normalizePath(event.path) }
+                    .distinct()
+                val deleted = events.any { event ->
+                    event is VFileDeleteEvent && isInterestingPath(event.path)
                 }
 
-                if (!relevant) return
+                if (changedPaths.isEmpty() && !deleted) return
 
-                syncAsync()
+                if (changedPaths.isNotEmpty()) {
+                    syncAsync {
+                        changedPaths.forEach { path ->
+                            handleChangedFileDuplicateCheck(path)
+                        }
+                    }
+                } else {
+                    syncAsync()
+                }
             }
         })
     }
@@ -120,6 +135,9 @@ class GalleryIndexService(private val project: Project) : Disposable {
 
     private fun startRefresh(forceReindex: Boolean, afterRefresh: (() -> Unit)? = null) {
         if (!refreshRunning.compareAndSet(false, true)) {
+            if (afterRefresh != null) {
+                pendingAfterRefreshCallbacks += afterRefresh
+            }
             refreshPending.set(true)
             if (forceReindex) refreshPendingForce.set(true)
             return
@@ -130,6 +148,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
     override fun dispose() {
         listeners.clear()
         statusListeners.clear()
+        pendingAfterRefreshCallbacks.clear()
     }
 
     private fun runRefresh(forceReindex: Boolean, afterRefreshCallbacks: List<() -> Unit>) {
@@ -150,10 +169,8 @@ class GalleryIndexService(private val project: Project) : Disposable {
                 if (forceReindex) {
                     MediaMetadataExtractor.clearCache()
                 }
-                val previousItems = cache
                 val discoveredItems = scanner.scan()
                 val items = enrichItems(discoveredItems, forceReindex, started)
-                val duplicateAlerts = duplicateAlertsFor(previousItems, items)
                 cache = items
                 duplicateIndex = buildDuplicateIndex(items)
 
@@ -171,11 +188,6 @@ class GalleryIndexService(private val project: Project) : Disposable {
                     )
                 )
                 callbackQueue.forEach { invokeOnEdt(it) }
-                duplicateAlerts.forEach { alert ->
-                    invokeOnEdt {
-                        showDuplicateDialogAndHandle(File(alert.newItem.absPath), alert.newItem.platform, alert.duplicates)
-                    }
-                }
             } catch (error: Throwable) {
                 publishStatus(
                     IndexStatus(
@@ -193,7 +205,9 @@ class GalleryIndexService(private val project: Project) : Disposable {
                 if (refreshPending.compareAndSet(true, false)) {
                     if (refreshRunning.compareAndSet(false, true)) {
                         val pendingForce = refreshPendingForce.getAndSet(false)
-                        runRefresh(pendingForce, emptyList())
+                        val pendingCallbacks = pendingAfterRefreshCallbacks.toList()
+                        pendingAfterRefreshCallbacks.clear()
+                        runRefresh(pendingForce, pendingCallbacks)
                     }
                 }
             }
@@ -370,47 +384,22 @@ class GalleryIndexService(private val project: Project) : Disposable {
             }
     }
 
-    private data class DuplicateAlert(
-        val newItem: GalleryAssetItem,
-        val duplicates: List<GalleryAssetItem>
-    )
+    private fun handleChangedFileDuplicateCheck(changedPath: String) {
+        val normalizedPath = AssetFileUtil.normalizePath(changedPath)
+        val item = cache.firstOrNull { AssetFileUtil.normalizePath(it.absPath) == normalizedPath } ?: return
+        if (item.mediaType != "image" || item.resourceRootPath.isBlank() || item.md5.isBlank()) return
 
-    private fun duplicateAlertsFor(
-        previousItems: List<GalleryAssetItem>,
-        currentItems: List<GalleryAssetItem>
-    ): List<DuplicateAlert> {
-        val previousByPath = previousItems.associateBy { AssetFileUtil.normalizePath(it.absPath) }
-        val currentIndex = buildDuplicateIndex(currentItems)
-        val alerts = mutableListOf<DuplicateAlert>()
+        val duplicates = duplicateIndex[item.platform]
+            ?.get(item.md5)
+            .orEmpty()
+            .filter { duplicate -> AssetFileUtil.normalizePath(duplicate.absPath) != normalizedPath }
 
-        currentIndex.values.forEach { platformMap ->
-            platformMap.values.forEach { group ->
-                if (group.size < 2) return@forEach
-                val key = duplicateGroupKey(group)
-                if (!duplicatePromptedKeys.add(key)) return@forEach
+        if (duplicates.isEmpty()) return
 
-                val changedItems = group.filter { item ->
-                    val previous = previousByPath[AssetFileUtil.normalizePath(item.absPath)]
-                    previous == null || previous.md5 != item.md5 || previous.mtime != item.mtime
-                }
-                val newItem = (changedItems.ifEmpty { group }).maxBy { it.mtime }
-                val duplicates = group.filter { item ->
-                    AssetFileUtil.normalizePath(item.absPath) != AssetFileUtil.normalizePath(newItem.absPath)
-                }
-                if (duplicates.isNotEmpty()) {
-                    alerts += DuplicateAlert(newItem, duplicates)
-                }
-            }
-        }
+        val promptKey = "${item.platform}|${item.md5}|$normalizedPath|${item.mtime}"
+        if (!duplicatePromptedKeys.add(promptKey)) return
 
-        return alerts
-    }
-
-    private fun duplicateGroupKey(group: List<GalleryAssetItem>): String {
-        return group
-            .map { item -> "${item.platform}|${item.md5}|${AssetFileUtil.normalizePath(item.absPath)}|${item.mtime}" }
-            .sorted()
-            .joinToString("\n")
+        showDuplicateDialogAndHandle(File(item.absPath), item.platform, duplicates)
     }
 
     private fun showDuplicateDialogAndHandle(newFile: File, platform: String, duplicates: List<GalleryAssetItem>) {

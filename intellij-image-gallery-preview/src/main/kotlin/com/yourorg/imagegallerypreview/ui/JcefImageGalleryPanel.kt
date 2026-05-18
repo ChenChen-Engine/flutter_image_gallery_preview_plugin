@@ -48,6 +48,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     private val hostLoadingLabel = JBLabel("Loading Image Gallery...", SwingConstants.CENTER)
     private val browser: JBCefBrowser?
     private val messageQuery: JBCefJSQuery?
+    private val mediaServer: LocalMediaStreamServer?
     private val latestItems = mutableListOf<GalleryAssetItem>()
 
     @Volatile
@@ -69,12 +70,16 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         if (!JBCefApp.isSupported()) {
             browser = null
             messageQuery = null
+            mediaServer = null
             add(createUnsupportedPanel(), BorderLayout.CENTER)
         } else {
             browser = JBCefBrowser()
             messageQuery = JBCefJSQuery.create(browser)
+            val server = LocalMediaStreamServer(logger)
+            mediaServer = server
             Disposer.register(this, browser)
             Disposer.register(this, messageQuery)
+            Disposer.register(this, server)
             messageQuery.addHandler { rawMessage ->
                 handleWebMessage(rawMessage)
                 null
@@ -158,11 +163,11 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             val assets = snapshot.map { item ->
                 val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
                 val file = File(normalizedPath)
-                val previewFile = when {
-                    item.mediaType == "image" || item.formatFamily == "lottie" || item.mediaType == "video" -> file
+                val previewSrc = when {
+                    item.mediaType == "video" -> mediaServer?.urlFor(file) ?: file.toURI().toASCIIString()
+                    item.mediaType == "image" || item.formatFamily == "lottie" -> file.toURI().toASCIIString()
                     else -> null
                 }
-                val previewSrc = previewFile?.toURI()?.toASCIIString()
                 val lottieJson = if (item.formatFamily == "lottie") readSmallTextFile(normalizedPath) else null
                 GalleryWebPayloadBuilder.toWebAsset(item, previewSrc, lottieJson)
             }

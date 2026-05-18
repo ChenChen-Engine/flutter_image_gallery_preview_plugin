@@ -470,6 +470,8 @@ input {
 .video-placeholder.has-video-preview {
   padding: 0;
   background: #0a0c10;
+  border-radius: inherit;
+  overflow: hidden;
 }
 
 .video-cover-img {
@@ -477,6 +479,8 @@ input {
   height: 100%;
   object-fit: cover;
   display: block;
+  border-radius: inherit;
+  pointer-events: none;
 }
 
 .media-icon {
