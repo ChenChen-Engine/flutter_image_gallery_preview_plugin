@@ -292,6 +292,57 @@ suite('extension contracts', () => {
     assert.match(diagnostic, /clip\.mp3/);
     assert.match(diagnostic, /fallback=Built-in/);
   });
+
+  test('opens native settings with exact resource string link setting id', async () => {
+    const calls: Array<{ command: string; arg?: string }> = [];
+    const extensionModule = requireExtensionModule({
+      executeCommand: async (command: string, arg?: string) => {
+        calls.push({ command, arg });
+      }
+    });
+    const openResourceStringLinkSettings = extensionModule.openResourceStringLinkSettings as (() => Promise<void>) | undefined;
+
+    assert.ok(openResourceStringLinkSettings, 'expected extension to export openResourceStringLinkSettings for contract tests');
+
+    await openResourceStringLinkSettings!();
+
+    assert.deepStrictEqual(calls, [
+      {
+        command: 'workbench.action.openWorkspaceSettings',
+        arg: 'imageGalleryPreview.resourceStringLinksEnabled'
+      }
+    ]);
+  });
+
+  test('falls back through settings commands when native settings command fails', async () => {
+    const calls: Array<{ command: string; arg?: string }> = [];
+    const extensionModule = requireExtensionModule({
+      executeCommand: async (command: string, arg?: string) => {
+        calls.push({ command, arg });
+        if (calls.length < 3) throw new Error('not available');
+      }
+    });
+    const openResourceStringLinkSettings = extensionModule.openResourceStringLinkSettings as (() => Promise<void>) | undefined;
+
+    assert.ok(openResourceStringLinkSettings, 'expected extension to export openResourceStringLinkSettings for contract tests');
+
+    await openResourceStringLinkSettings!();
+
+    assert.deepStrictEqual(calls, [
+      {
+        command: 'workbench.action.openWorkspaceSettings',
+        arg: 'imageGalleryPreview.resourceStringLinksEnabled'
+      },
+      {
+        command: 'workbench.action.openWorkspaceSettings',
+        arg: '@id:imageGalleryPreview.resourceStringLinksEnabled'
+      },
+      {
+        command: 'workbench.action.openSettings',
+        arg: 'imageGalleryPreview.resourceStringLinksEnabled'
+      }
+    ]);
+  });
 });
 
 function mediaInfo(
@@ -356,7 +407,7 @@ function normalizeForTest(value: string): string {
   return value.replace(/\\/g, '/');
 }
 
-function requireExtensionModule(): Record<string, unknown> {
+function requireExtensionModule(overrides: { executeCommand?: (command: string, arg?: string) => Promise<void> } = {}): Record<string, unknown> {
   const originalLoad = (Module as any)._load;
   (Module as any)._load = function patchedLoad(request: string, parent: unknown, isMain: boolean) {
     if (request === 'vscode') {
@@ -377,6 +428,7 @@ function requireExtensionModule(): Record<string, unknown> {
             return { dispose() {} };
           },
           setStatusBarMessage() {},
+          showInformationMessage: async () => undefined,
           showQuickPick: async () => undefined,
           showWarningMessage: async () => undefined,
           showErrorMessage: async () => undefined
@@ -396,7 +448,7 @@ function requireExtensionModule(): Record<string, unknown> {
           }
         },
         commands: {
-          executeCommand: async () => undefined,
+          executeCommand: overrides.executeCommand ?? (async () => undefined),
           registerCommand() {
             return { dispose() {} };
           }

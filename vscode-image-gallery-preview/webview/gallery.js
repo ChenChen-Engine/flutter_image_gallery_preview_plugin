@@ -44,6 +44,7 @@
     zoomReset: document.getElementById('zoomResetButton'),
     sync: document.getElementById('syncButton'),
     refresh: document.getElementById('refreshButton'),
+    settings: document.getElementById('settingsButton'),
     status: document.getElementById('statusText'),
     root: document.getElementById('galleryRoot'),
     sentinel: document.getElementById('loadMoreSentinel'),
@@ -148,6 +149,27 @@
 
   function post(type, payload = {}) {
     bridge.post({ type, ...payload });
+  }
+
+  function triggerCommandUri(commandUri) {
+    const link = document.createElement('a');
+    link.href = commandUri;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  function openHostSettings() {
+    const commandUri = typeof window.__galleryOpenSettingsCommandUri === 'string'
+      ? window.__galleryOpenSettingsCommandUri
+      : '';
+    if (commandUri) {
+      triggerCommandUri(commandUri);
+      return;
+    }
+
+    post('openSettings');
   }
 
   function normalizeText(value) {
@@ -1473,6 +1495,8 @@
     post('refresh', { force: true });
   });
 
+  elements.settings?.addEventListener('click', openHostSettings);
+
   if (elements.infoRefresh) {
     elements.infoRefresh.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -1562,7 +1586,9 @@
 
     if (msg?.type === 'toast' && msg.message) {
       showToast(msg.message);
+      return;
     }
+
   }
 
   window.galleryHostReceive = handleHostMessage;

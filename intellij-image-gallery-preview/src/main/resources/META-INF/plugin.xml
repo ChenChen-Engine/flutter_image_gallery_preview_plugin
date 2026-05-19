@@ -17,6 +17,13 @@
                 factoryClass="com.yourorg.imagegallerypreview.ui.ImageGalleryToolWindowFactory"
                 icon="AllIcons.FileTypes.Image"/>
         <postStartupActivity implementation="com.yourorg.imagegallerypreview.startup.GalleryStartupActivity"/>
+        <psi.referenceContributor implementation="com.yourorg.imagegallerypreview.navigation.GalleryResourceReferenceContributor"/>
+        <gotoDeclarationHandler implementation="com.yourorg.imagegallerypreview.navigation.GalleryResourceGotoDeclarationHandler"/>
+        <projectConfigurable
+                parentId="other"
+                instance="com.yourorg.imagegallerypreview.settings.GalleryProjectConfigurable"
+                id="com.yourorg.imagegallerypreview.settings"
+                displayName="Image Gallery Preview"/>
     </extensions>
 
     <actions>

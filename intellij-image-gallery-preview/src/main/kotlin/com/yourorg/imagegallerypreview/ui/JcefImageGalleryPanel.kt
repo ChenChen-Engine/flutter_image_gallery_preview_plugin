@@ -5,12 +5,14 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.ide.BrowserUtil
 import com.intellij.ide.actions.RevealFileAction
+import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
 import com.intellij.ide.projectView.ProjectView
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -24,7 +26,9 @@ import com.intellij.ui.jcef.JBCefJSQuery
 import com.intellij.util.ui.JBUI
 import com.yourorg.imagegallerypreview.metadata.MediaMetadataExtractor
 import com.yourorg.imagegallerypreview.model.GalleryAssetItem
+import com.yourorg.imagegallerypreview.navigation.GalleryResourceLinkPresentationService
 import com.yourorg.imagegallerypreview.service.GalleryIndexService
+import com.yourorg.imagegallerypreview.service.GallerySettingsService
 import com.yourorg.imagegallerypreview.util.AssetFileUtil
 import java.awt.BorderLayout
 import java.awt.CardLayout
@@ -43,6 +47,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     private val logger = Logger.getInstance(JcefImageGalleryPanel::class.java)
     private val gson = Gson()
     private val service = GalleryIndexService.getInstance(project)
+    private val settings = GallerySettingsService.getInstance(project)
     private val contentLayout = CardLayout()
     private val contentPanel = JPanel(contentLayout)
     private val hostLoadingLabel = JBLabel("Loading Image Gallery...", SwingConstants.CENTER)
@@ -147,6 +152,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
                 if (browser != null) {
                     contentLayout.show(contentPanel, "browser")
                 }
+                sendSettingsState()
                 val status = service.currentStatus()
                 if (status.state == GalleryIndexService.IndexState.SUCCESS && latestItems.isNotEmpty()) {
                     sendRenderingState()
@@ -157,6 +163,19 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
                 }
             }
 
+            "openSettings" -> ApplicationManager.getApplication().invokeLater {
+                ShowSettingsUtil.getInstance().showSettingsDialog(project, "Image Gallery Preview")
+            }
+            "requestSettings" -> sendSettingsState()
+            "updateSettings" -> {
+                val enabled = message.get("resourceStringLinksEnabled")?.asBoolean == true
+                settings.resourceStringLinksEnabled = enabled
+                ApplicationManager.getApplication().invokeLater {
+                    if (!enabled) GalleryResourceLinkPresentationService.getInstance(project).clearPresentation()
+                    DaemonCodeAnalyzer.getInstance(project).restart()
+                }
+                sendSettingsState()
+            }
             "sync" -> service.syncAsync()
             "refresh" -> service.refreshAsync(forceReindex = message.get("force")?.asBoolean ?: true)
             "copy" -> ApplicationManager.getApplication().invokeLater {
@@ -211,6 +230,15 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             return
         }
         sendToWeb(loadingPayload(status, loading = status.state == GalleryIndexService.IndexState.INDEXING))
+    }
+
+    private fun sendSettingsState() {
+        sendToWeb(
+            mapOf(
+                "type" to "settingsState",
+                "resourceStringLinksEnabled" to settings.resourceStringLinksEnabled
+            )
+        )
     }
 
     private fun sendRenderingState() {

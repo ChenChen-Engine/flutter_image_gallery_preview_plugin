@@ -25,8 +25,22 @@ suite('shared web smoke', () => {
 
     assert.match(html, /id="syncButton"/);
     assert.match(html, /id="refreshButton"/);
+    assert.match(html, /id="settingsButton"/);
     assert.match(script, /post\('sync'/);
     assert.match(script, /post\('refresh',\s*\{\s*force:\s*true\s*\}\)/);
+  });
+
+  test('shared settings exposes resource string link toggle protocol', () => {
+    const html = fs.readFileSync(sharedPath('index.html'), 'utf8');
+    const script = fs.readFileSync(sharedPath('gallery.js'), 'utf8');
+
+    assert.match(html, /id="settingsButton"/);
+    assert.doesNotMatch(html, /id="settingsModal"/);
+    assert.doesNotMatch(html, /id="resourceStringLinksToggle"/);
+    assert.match(script, /post\('openSettings'\)/);
+    assert.match(script, /__galleryOpenSettingsCommandUri/);
+    assert.match(script, /triggerCommandUri/);
+    assert.doesNotMatch(script, /post\('updateSettings'/);
   });
 
   test('shared web accepts VSCode host messages and exposes info refresh', () => {

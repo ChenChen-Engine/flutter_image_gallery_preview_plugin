@@ -13,6 +13,7 @@
   "activationEvents": [
     "onView:imageGalleryPreview.view",
     "onCommand:imageGalleryPreview.refresh",
+    "onCommand:imageGalleryPreview.openSettings",
     "onCommand:imageGalleryPreview.openResource",
     "onStartupFinished"
   ],
@@ -42,10 +43,24 @@
         "title": "Image Gallery Preview: Refresh"
       },
       {
+        "command": "imageGalleryPreview.openSettings",
+        "title": "Image Gallery Preview: Open Settings"
+      },
+      {
         "command": "imageGalleryPreview.openResource",
         "title": "Image Gallery Preview: Open Resource"
       }
     ],
+    "configuration": {
+      "title": "Image Gallery Preview",
+      "properties": {
+        "imageGalleryPreview.resourceStringLinksEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "启用资源字符串跳转。开启后，完整匹配索引资源路径的静态字符串可通过 Ctrl/Cmd+Click 跳转到资源文件。"
+        }
+      }
+    },
     "menus": {
       "view/title": [
         {

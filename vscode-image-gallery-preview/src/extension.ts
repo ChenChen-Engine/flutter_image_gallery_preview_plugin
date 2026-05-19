@@ -4,16 +4,25 @@ import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { Worker } from 'worker_threads';
 import { extractMediaInfo, seedMediaInfoCache } from './mediaMetadata';
+import { ResourceDefinitionProvider, ResourceDocumentLinkProvider, ResourceReferenceState } from './resourceLinks';
 import { ScanWorkerMessage, ScanWorkerProgress } from './scanWorker';
 import { GalleryAssetItem, MediaMetadataInfo, PlatformType } from './shared/types';
 import { toWebviewAssetItem, WebviewAssetItem } from './webPayload';
 
 const SCAN_TIMEOUT_MS = 120_000;
 const SCAN_STALE_MS = 12_000;
+const RESOURCE_STRING_LINKS_SETTING_SECTION = 'imageGalleryPreview';
+const RESOURCE_STRING_LINKS_SETTING_NAME = 'resourceStringLinksEnabled';
+const RESOURCE_STRING_LINKS_SETTING_KEY = `${RESOURCE_STRING_LINKS_SETTING_SECTION}.${RESOURCE_STRING_LINKS_SETTING_NAME}`;
 const IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'pdf', 'heic', 'heif', 'apng', 'avif', 'ico', 'lottie', 'vector_xml']);
 const AUDIO_FORMATS = new Set(['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'amr', 'mid', 'midi', 'caf', 'wma', 'aiff', 'aif', 'alac', 'mka']);
 const VIDEO_FORMATS = new Set(['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', '3gp', '3gpp', 'mpeg', 'mpg', 'ts', 'm2ts', 'wmv', 'flv']);
 const DIRECT_FORMATS = new Set([...IMAGE_FORMATS, ...AUDIO_FORMATS, ...VIDEO_FORMATS]);
+
+interface SettingsOpenOptions {
+  output?: Pick<vscode.OutputChannel, 'appendLine'>;
+  notify?: boolean;
+}
 
 export interface LoadingStateMessage {
   count?: number;
@@ -133,7 +142,10 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private watchers: vscode.FileSystemWatcher[] = [];
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly resourceReferences: ResourceReferenceState
+  ) {}
 
   start(): void {
     if (this.started) return;
@@ -146,6 +158,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     this.view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
+      enableCommandUris: true,
       localResourceRoots: [
         vscode.Uri.file(path.join(this.context.extensionPath, 'webview')),
         ...(vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri)
@@ -153,7 +166,12 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = this.htmlForWebview(webviewView.webview);
-    webviewView.webview.onDidReceiveMessage((message) => void this.handleWebMessage(message));
+    webviewView.webview.onDidReceiveMessage((message) => {
+      void this.handleWebMessage(message).catch((error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.output.appendLine(`[webview] message ${message?.type ?? '<unknown>'} failed: ${detail}`);
+      });
+    });
     this.start();
   }
 
@@ -197,6 +215,11 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     this.output.dispose();
   }
 
+  async openSettingsCommand(): Promise<void> {
+    this.output.appendLine(`[settings] open requested from command: ${RESOURCE_STRING_LINKS_SETTING_KEY}`);
+    await openResourceStringLinkSettings({ output: this.output, notify: false });
+  }
+
   private async handleWebMessage(message: any): Promise<void> {
     if (message?.type === 'ready') {
       await this.postAssets();
@@ -209,6 +232,20 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       } else {
         await this.postLoadingState(false, '');
       }
+      return;
+    }
+
+    if (message?.type === 'openSettings') {
+      await this.openSettingsFromWebview();
+      return;
+    }
+
+    if (message?.type === 'updateSettings') {
+      const enabled = message.resourceStringLinksEnabled === true;
+      this.resourceReferences.setEnabled(enabled);
+      await vscode.workspace.getConfiguration(RESOURCE_STRING_LINKS_SETTING_SECTION)
+        .update(RESOURCE_STRING_LINKS_SETTING_NAME, enabled, vscode.ConfigurationTarget.Workspace);
+      vscode.window.setStatusBarMessage(`Resource string links ${enabled ? 'enabled' : 'disabled'}`, 1500);
       return;
     }
 
@@ -266,6 +303,16 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async openSettingsFromWebview(): Promise<void> {
+    this.output.appendLine(`[settings] open requested from webview: ${RESOURCE_STRING_LINKS_SETTING_KEY}`);
+    try {
+      await openResourceStringLinkSettings({ output: this.output, notify: false });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.output.appendLine(`[settings] failed to open settings: ${detail}`);
+    }
+  }
+
   private async performRefresh(
     forceReindex: boolean,
     callbacks: Array<(items: GalleryAssetItem[]) => Promise<void> | void>
@@ -281,6 +328,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
         this.cachedItems = [];
         this.duplicateIndex.clear();
         this.infoCache.clear();
+        this.resourceReferences.updateItems([]);
         await this.postAssets();
         await this.postLoadingState(false, '');
         return;
@@ -310,6 +358,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
         this.cachedItems = partialItems;
         this.duplicateIndex = this.buildDuplicateIndex(partialItems);
         this.infoCache = primeInfoCacheFromItems(partialItems);
+        this.resourceReferences.updateItems(partialItems);
         await this.postAssets();
         if (!done) {
           this.output.appendLine(`[${operation}] partial publish ${partialItems.length} assets`);
@@ -332,6 +381,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       this.cachedItems = items;
       this.duplicateIndex = this.buildDuplicateIndex(items);
       this.infoCache = primeInfoCacheFromItems(items);
+      this.resourceReferences.updateItems(items);
 
       await this.postAssets();
       const elapsed = Date.now() - started;
@@ -525,6 +575,9 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       const uri = webview.asWebviewUri(vscode.Uri.file(path.join(webviewDir, assetName))).toString();
       html = html.replace(`./${assetName}`, uri);
     }
+    const commandUri = 'command:imageGalleryPreview.openSettings';
+    const bootstrap = `<script>window.__galleryOpenSettingsCommandUri=${JSON.stringify(commandUri)};</script>`;
+    html = html.replace('</head>', `${bootstrap}</head>`);
 
     return html;
   }
@@ -809,14 +862,77 @@ async function openWithDefaultApp(absPath: string): Promise<void> {
   await vscode.env.openExternal(vscode.Uri.file(absPath));
 }
 
+export async function openResourceStringLinkSettings(options: SettingsOpenOptions = {}): Promise<void> {
+  const exactQuery = RESOURCE_STRING_LINKS_SETTING_KEY;
+  const idQuery = `@id:${RESOURCE_STRING_LINKS_SETTING_KEY}`;
+  const attempts: Array<{ command: string; arg: string }> = [
+    { command: 'workbench.action.openWorkspaceSettings', arg: exactQuery },
+    { command: 'workbench.action.openWorkspaceSettings', arg: idQuery },
+    { command: 'workbench.action.openSettings', arg: exactQuery },
+    { command: 'workbench.action.openSettings', arg: idQuery }
+  ];
+  const errors: string[] = [];
+
+  for (const attempt of attempts) {
+    try {
+      options.output?.appendLine(`[settings] execute ${attempt.command} ${attempt.arg}`);
+      await vscode.commands.executeCommand(attempt.command, attempt.arg);
+      if (options.notify === true) {
+        await vscode.window.showInformationMessage(`已打开设置：${RESOURCE_STRING_LINKS_SETTING_KEY}`);
+      }
+      return;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      errors.push(`${attempt.command} ${attempt.arg}: ${detail}`);
+      options.output?.appendLine(`[settings] failed ${attempt.command} ${attempt.arg}: ${detail}`);
+    }
+  }
+
+  try {
+    const scheme = vscode.env.uriScheme || 'vscode';
+    const uri = vscode.Uri.parse(`${scheme}://settings/${RESOURCE_STRING_LINKS_SETTING_KEY}`);
+    options.output?.appendLine(`[settings] open external ${uri.toString()}`);
+    const opened = await vscode.env.openExternal(uri);
+    if (opened !== false) {
+      return;
+    }
+    errors.push(`openExternal ${uri.toString()}: returned false`);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    errors.push(`openExternal settings URI: ${detail}`);
+    options.output?.appendLine(`[settings] failed external settings URI: ${detail}`);
+  }
+
+  await vscode.window.showErrorMessage(
+    `Unable to open Image Gallery Preview settings. Search ${RESOURCE_STRING_LINKS_SETTING_KEY} in Settings.`
+  );
+  throw new Error(errors.join('; ') || `Unable to open ${RESOURCE_STRING_LINKS_SETTING_KEY}`);
+}
+
 export function activate(context: vscode.ExtensionContext): void {
-  const provider = new ImageGalleryViewProvider(context);
+  const resourceReferences = new ResourceReferenceState(
+    vscode.workspace.getConfiguration(RESOURCE_STRING_LINKS_SETTING_SECTION)
+      .get<boolean>(RESOURCE_STRING_LINKS_SETTING_NAME, false)
+  );
+  const provider = new ImageGalleryViewProvider(context, resourceReferences);
+  const resourceLinkProvider = new ResourceDocumentLinkProvider(resourceReferences);
+  const resourceDefinitionProvider = new ResourceDefinitionProvider(resourceReferences);
   provider.start();
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ImageGalleryViewProvider.viewId, provider),
+    vscode.languages.registerDocumentLinkProvider({ scheme: 'file' }, resourceLinkProvider),
+    vscode.languages.registerDefinitionProvider({ scheme: 'file' }, resourceDefinitionProvider),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      const enabled = vscode.workspace.getConfiguration(RESOURCE_STRING_LINKS_SETTING_SECTION)
+        .get<boolean>(RESOURCE_STRING_LINKS_SETTING_NAME, false);
+      if (!event.affectsConfiguration(RESOURCE_STRING_LINKS_SETTING_KEY) && resourceReferences.enabled === enabled) return;
+      resourceReferences.setEnabled(enabled);
+    }),
     vscode.commands.registerCommand('imageGalleryPreview.refresh', () => provider.refresh()),
+    vscode.commands.registerCommand('imageGalleryPreview.openSettings', () => provider.openSettingsCommand()),
     vscode.commands.registerCommand('imageGalleryPreview.openResource', (absPath: string) => openResourceByPath(absPath)),
+    { dispose: () => resourceReferences.dispose() },
     { dispose: () => provider.dispose() }
   );
 }
