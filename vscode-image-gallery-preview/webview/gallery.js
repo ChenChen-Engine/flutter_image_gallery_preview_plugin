@@ -300,25 +300,49 @@
     const descriptors = values.map((value) => typeof value === 'string' ? { value, label: value, primary: false } : value);
     const rawValues = descriptors.map((option) => option.value);
     const safeCurrent = rawValues.includes(currentValue) ? currentValue : 'all';
-    select.innerHTML = '';
 
-    const allOption = document.createElement('option');
-    allOption.value = 'all';
-    allOption.textContent = allLabel;
-    select.appendChild(allOption);
+    if (!selectOptionsEqual(select, allLabel, descriptors)) {
+      select.innerHTML = '';
 
-    for (const descriptor of descriptors) {
-      const option = document.createElement('option');
-      option.value = descriptor.value;
-      option.textContent = descriptor.label || descriptor.value;
-      if (descriptor.title) option.title = descriptor.title;
-      select.appendChild(option);
+      const allOption = document.createElement('option');
+      allOption.value = 'all';
+      allOption.textContent = allLabel;
+      select.appendChild(allOption);
+
+      for (const descriptor of descriptors) {
+        const option = document.createElement('option');
+        option.value = descriptor.value;
+        option.textContent = descriptor.label || descriptor.value;
+        if (descriptor.title) option.title = descriptor.title;
+        select.appendChild(option);
+      }
     }
 
     select.value = safeCurrent;
     const selectedDescriptor = descriptors.find((descriptor) => descriptor.value === safeCurrent);
     select.title = selectedDescriptor?.title || '';
     return safeCurrent;
+  }
+
+  function selectOptionsEqual(select, allLabel, descriptors) {
+    const expected = [{ value: 'all', label: allLabel, title: '' }]
+      .concat(descriptors.map((descriptor) => ({
+        value: descriptor.value,
+        label: descriptor.label || descriptor.value,
+        title: descriptor.title || ''
+      })));
+    if (select.options.length !== expected.length) return false;
+    for (let index = 0; index < expected.length; index += 1) {
+      const option = select.options[index];
+      const descriptor = expected[index];
+      if (option.value !== descriptor.value ||
+        option.textContent !== descriptor.label ||
+        (option.title || '') !== descriptor.title
+      ) {
+        return false;
+      }
+    }
+    return true;
   }
 
   function updateFilterOptions() {
@@ -1462,6 +1486,26 @@
     }
   });
 
+  elements.modal.addEventListener('wheel', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const scrollable = target?.closest('.info-content');
+    if (!scrollable) {
+      event.preventDefault();
+      return;
+    }
+
+    const maxScroll = scrollable.scrollHeight - scrollable.clientHeight;
+    const atTop = scrollable.scrollTop <= 0;
+    const atBottom = scrollable.scrollTop >= maxScroll - 1;
+    if (maxScroll <= 0 ||
+      (event.deltaY < 0 && atTop) ||
+      (event.deltaY > 0 && atBottom)
+    ) {
+      event.preventDefault();
+    }
+    event.stopPropagation();
+  }, { passive: false });
+
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       closeInfoModal();
@@ -1522,6 +1566,12 @@
   }
 
   window.galleryHostReceive = handleHostMessage;
+  if (Array.isArray(window.__galleryPendingHostMessages)) {
+    const pendingMessages = window.__galleryPendingHostMessages.splice(0);
+    for (const pending of pendingMessages) {
+      handleHostMessage(pending);
+    }
+  }
   window.addEventListener('message', (event) => handleHostMessage(event.data));
 
   applyTileSize();

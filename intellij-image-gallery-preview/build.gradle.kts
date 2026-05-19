@@ -21,6 +21,7 @@ fun readVersionFromFile(): String {
 
 val configuredVersion = readVersionFromFile()
 version = configuredVersion
+val javafxVersion = "21.0.5"
 
 repositories {
     maven(url = "https://mirrors.cloud.tencent.com/nexus/repository/maven-public/")
@@ -35,11 +36,13 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("com.drewnoakes:metadata-extractor:2.19.0")
     implementation("org.apache.commons:commons-imaging:1.0.0-alpha5")
-    implementation("org.openjfx:javafx-base:21.0.5:win")
-    implementation("org.openjfx:javafx-controls:21.0.5:win")
-    implementation("org.openjfx:javafx-graphics:21.0.5:win")
-    implementation("org.openjfx:javafx-media:21.0.5:win")
-    implementation("org.openjfx:javafx-swing:21.0.5:win")
+    for (classifier in listOf("win", "mac", "mac-aarch64")) {
+        implementation("org.openjfx:javafx-base:$javafxVersion:$classifier")
+        implementation("org.openjfx:javafx-controls:$javafxVersion:$classifier")
+        implementation("org.openjfx:javafx-graphics:$javafxVersion:$classifier")
+        implementation("org.openjfx:javafx-media:$javafxVersion:$classifier")
+        implementation("org.openjfx:javafx-swing:$javafxVersion:$classifier")
+    }
     testImplementation(kotlin("test"))
 
     intellijPlatform {

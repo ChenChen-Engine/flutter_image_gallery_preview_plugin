@@ -36,7 +36,24 @@ suite('shared web smoke', () => {
     assert.match(html, /id="infoRefreshButton"/);
     assert.match(script, /window\.addEventListener\('message'/);
     assert.match(script, /window\.galleryHostReceive\s*=\s*handleHostMessage/);
+    assert.match(script, /__galleryPendingHostMessages/);
     assert.match(script, /post\('requestMediaInfo',\s*\{\s*absPath:\s*item\.absPath,\s*force:\s*true\s*\}\)/);
+  });
+
+  test('shared grouping keeps nested sections as visual containers', () => {
+    const css = fs.readFileSync(sharedPath('gallery.css'), 'utf8');
+
+    assert.match(css, /\.section\s*\{[^}]*border:/s);
+    assert.match(css, /\.section\s*\{[^}]*border-radius:\s*12px/s);
+    assert.match(css, /\.section-body\s*\{[^}]*padding:/s);
+    assert.doesNotMatch(css, /\.section\.project\s*\{[^}]*border-left:/s);
+  });
+
+  test('shared filters do not rebuild unchanged select options', () => {
+    const script = fs.readFileSync(sharedPath('gallery.js'), 'utf8');
+
+    assert.match(script, /function selectOptionsEqual/);
+    assert.match(script, /if \(!selectOptionsEqual\(select, allLabel, descriptors\)\)/);
   });
 
   test('shared media preview keeps external playback without stale web player code', () => {

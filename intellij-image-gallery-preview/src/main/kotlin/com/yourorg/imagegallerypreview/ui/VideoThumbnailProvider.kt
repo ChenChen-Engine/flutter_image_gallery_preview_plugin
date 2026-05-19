@@ -29,19 +29,22 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.imageio.ImageIO
 
 internal class VideoThumbnailProvider(private val logger: Logger) : Disposable {
-    private val cache = ConcurrentHashMap<String, String>()
+    private val cache = ConcurrentHashMap<String, Path>()
     private val tempDir = Files.createTempDirectory("image-gallery-video-thumbs")
 
     fun posterUriFor(file: File): String? {
+        return posterFileFor(file)?.toURI()?.toASCIIString()?.plus("#gallery-poster")
+    }
+
+    fun posterFileFor(file: File): File? {
         if (!file.exists() || !file.isFile || file.length() <= 0L) return null
 
         val key = "${file.absoluteFile.normalize().path}|${file.lastModified()}|${file.length()}"
-        cache[key]?.let { return it }
+        cache[key]?.let { return it.toFile() }
 
         val poster = createPoster(file, key) ?: return null
-        val uri = poster.toUri().toASCIIString() + "#gallery-poster"
-        cache[key] = uri
-        return uri
+        cache[key] = poster
+        return poster.toFile()
     }
 
     override fun dispose() {

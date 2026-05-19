@@ -2,6 +2,7 @@
     <id>com.yourorg.imagegallerypreview</id>
     <name>Image Gallery Preview</name>
     <vendor email="dev@yourorg.local">YourOrg</vendor>
+    <idea-version since-build="241"/>
 
     <description><![CDATA[
         在工具窗口中预览 Android、Flutter、iOS 资源文件，支持分组筛选、快速复制、MediaInfo 信息查看，以及重复资源检测。
