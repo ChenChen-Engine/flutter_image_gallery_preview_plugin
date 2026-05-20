@@ -141,20 +141,48 @@ object MediaMetadataExtractor {
         val commands = mutableListOf<List<String>>()
         val isWindows = osName.lowercase(Locale.ROOT).contains("win")
         if (isWindows) {
-            commands += listOf("cmd", "/c", "mediaInfo", "--output=json", absPath)
+            mediaInfoArgumentVariants(absPath, isWindows).forEach { args ->
+                commands.addUnique(listOf("cmd", "/c", "mediaInfo") + args)
+            }
         }
 
         configuredExecutable
             ?.takeIf { it.isNotBlank() }
             ?.let { executable ->
-                val direct = listOf(executable, "--output=json", absPath)
-                if (direct !in commands) commands += direct
+                mediaInfoArgumentVariants(absPath, isWindows).forEach { args ->
+                    commands.addUnique(listOf(executable) + args)
+                }
             }
 
         if (!isWindows && commands.isEmpty()) {
-            commands += listOf("mediainfo", "--output=json", absPath)
+            mediaInfoArgumentVariants(absPath, isWindows).forEach { args ->
+                commands.addUnique(listOf("mediainfo") + args)
+            }
         }
         return commands
+    }
+
+    private fun mediaInfoArgumentVariants(absPath: String, isWindows: Boolean): List<List<String>> {
+        val jsonVariants = if (isWindows) {
+            listOf(
+                listOf("--output=json", absPath),
+                listOf("output=JSON", absPath),
+                listOf("output=json", absPath),
+                listOf("--Output=JSON", absPath)
+            )
+        } else {
+            listOf(
+                listOf("output=JSON", absPath),
+                listOf("output=json", absPath),
+                listOf("--Output=JSON", absPath),
+                listOf("--output=json", absPath)
+            )
+        }
+        return jsonVariants + listOf(listOf(absPath))
+    }
+
+    private fun MutableList<List<String>>.addUnique(command: List<String>) {
+        if (command !in this) add(command)
     }
 
     internal fun durationMillisFrom(info: MediaMetadataInfo?): Long? {
@@ -666,6 +694,15 @@ object MediaMetadataExtractor {
                 )
             }
             commonPaths.forEach { candidate ->
+                checkCandidate(candidate)?.let { return it }
+            }
+        } else {
+            listOf(
+                "/opt/homebrew/bin/mediainfo",
+                "/usr/local/bin/mediainfo",
+                "/opt/local/bin/mediainfo",
+                "/usr/bin/mediainfo"
+            ).forEach { candidate ->
                 checkCandidate(candidate)?.let { return it }
             }
         }

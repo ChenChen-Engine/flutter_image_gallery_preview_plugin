@@ -41,6 +41,8 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
 - Metadata:
   - eager metadata indexing before items are shown
   - Windows MediaInfo CLI probe via `cmd /c mediaInfo --output=json <file>`
+  - macOS / Linux MediaInfo CLI probes try `mediainfo output=JSON <file>` before dashed output flags, matching Homebrew CLI behavior
+  - macOS common install paths such as `/opt/homebrew/bin/mediainfo` and `/usr/local/bin/mediainfo` are checked because GUI-launched IDEs often have a reduced `PATH`
   - MediaInfo text-output parsing when that CLI flag returns the default readable report instead of JSON
   - MediaInfo executable discovery is cached for the plugin session, so PATH and version probes do not repeat per file
   - bounded parallel metadata enrichment for faster MediaInfo / ffprobe extraction
@@ -60,7 +62,8 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
 
 - Both plugins use the shared web gallery and open audio/video in the OS default associated app instead of in-plugin playback.
 - IntelliJ resolves indexed metadata before publishing assets and reports structured loading phases for discovery vs metadata enrichment.
-- IntelliJ shows a host-side loading fallback while JCEF is starting so the tool window is never blank.
+- IntelliJ shows a host-side loading state while JCEF is starting so the tool window is never blank.
+- IntelliJ requires an IDE runtime with JCEF support; when JCEF is unavailable the tool window shows a large runtime instruction message and does not fall back to a system-browser gallery.
 - VSCode uses incremental worker-based scanning, partial publishes, and loading diagnostics with phase/count/path, elapsed/heartbeat details, worker status, and OutputChannel diagnostics for long scans.
 - The shared webview accepts VSCode `postMessage` events and JCEF direct calls through the same host-message path; loading is controlled by `loadingState`, not by partial asset publishes.
 - If an item times out or falls back during indexing, the gallery shows lightweight fallback metadata, clicking `i` retries extraction on demand, and the metadata dialog refresh button forces a fresh MediaInfo read.

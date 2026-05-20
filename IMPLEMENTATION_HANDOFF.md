@@ -109,7 +109,7 @@ The shared web layer does not guess platform copy rules. Host code sends the fin
 
 ### IntelliJ side
 
-- The Swing card grid was replaced by a `JBCefBrowser`-based gallery panel.
+- The old Swing card grid has been removed; the IntelliJ tool window uses a `JBCefBrowser`-based gallery panel.
 - The Tool Window host is:
   - `C:\Users\chenz\Desktop\flutter_image_gallery_preview_plugin\intellij-image-gallery-preview\src\main\kotlin\com\yourorg\imagegallerypreview\ui\JcefImageGalleryPanel.kt`
 - Discovery and eager metadata enrichment are coordinated in:
@@ -159,6 +159,8 @@ The shared web layer does not guess platform copy rules. Host code sends the fin
 - MediaInfo JSON keeps all primitive track fields; row truncation is intentionally avoided so the `i` dialog can show complete CLI output.
 - MediaInfo text reports are also parsed because `mediaInfo --output=json <file>` can return the default readable report on MediaInfo CLI v26.05.
 - Windows direct executable fallback checks PATH and common CLI install directories across all drive letters, including `MediaInfo_Cli`.
+- macOS / Linux probing tries `mediainfo output=JSON <file>` and `mediainfo output=json <file>` before dashed output flags, then plain text output.
+- macOS common install paths include `/opt/homebrew/bin/mediainfo`, `/usr/local/bin/mediainfo`, `/opt/local/bin/mediainfo`, and `/usr/bin/mediainfo` to cover GUI-launched IDEs with a reduced `PATH`.
 - MediaInfo executable discovery is session-cached in both hosts. The scanner still runs MediaInfo per item, but PATH scanning and version probes happen once per plugin process.
 - MediaInfo command failures are surfaced as explicit source labels: `timeout`, `parse-empty`, `command-failed`, or `fallback`.
 - IntelliJ drains process stdout while waiting for MediaInfo / ffprobe, avoiding false timeouts caused by a full output pipe.
@@ -208,7 +210,9 @@ Relevant files:
 
 - `Sync` is the normal incremental path for startup, file watcher changes, and toolbar sync. It detects added / deleted / changed resources and reuses valid indexed metadata for unchanged files.
 - `Refresh` is a forced reindex path. It clears or bypasses metadata cache and reruns MediaInfo / native / ffprobe enrichment.
-- IntelliJ shows a Swing-side loading fallback before the JCEF web UI reports `ready`, preventing a blank Image Gallery window after IDE restart.
+- IntelliJ shows a host-side loading state before the JCEF web UI reports `ready`, preventing a blank Image Gallery window after IDE restart.
+- If `JBCefApp.isSupported()` is false, IntelliJ shows a large in-tool-window runtime instruction message and does not start the removed system-browser fallback.
+- `plugin.xml` intentionally does not declare `com.intellij.modules.jcef`; the plugin detects missing JCEF at runtime so users can still install it and switch to a matching JetBrains Runtime.
 - Loading payloads can include `phase`, item counts, metadata counts, current path, fallback source, elapsed time, worker status, partial count, and diagnostic text.
 - If a metadata item times out, both hosts publish a diagnostic and keep scanning instead of waiting indefinitely.
 - VSCode mirrors worker diagnostics into the `Image Gallery Preview` OutputChannel; if loading gets stuck, collect both overlay text and OutputChannel lines beginning with `[sync]`, `[refresh]`, or `[worker:...]`.

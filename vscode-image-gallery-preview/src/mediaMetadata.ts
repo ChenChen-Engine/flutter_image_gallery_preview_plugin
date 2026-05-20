@@ -198,32 +198,65 @@ function imageInfoToMediaInfo(info: ImageInfo): MediaMetadataInfo {
   };
 }
 
-async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<MediaMetadataInfo | null> {
-  const commands: Array<{ file: string; args: string[]; source: string }> = [];
-  if (process.platform === 'win32') {
-    commands.push({
-      file: 'cmd',
-      args: ['/c', 'mediaInfo', '--output=json', absPath],
-      source: 'MediaInfo (PATH)'
-    });
+interface MediaInfoProbeCommand {
+  file: string;
+  args: string[];
+  source: string;
+}
+
+export function mediaInfoProbeCommands(
+  absPath: string,
+  platform: NodeJS.Platform = process.platform,
+  executable: string | null = resolveMediaInfoExecutable()
+): MediaInfoProbeCommand[] {
+  const isWindows = platform === 'win32';
+  const commands: MediaInfoProbeCommand[] = [];
+  const pushCommand = (file: string, args: string[], source: string) => {
+    if (!commands.some((command) => command.file === file && command.args.join('\0') === args.join('\0'))) {
+      commands.push({ file, args, source });
+    }
+  };
+
+  if (isWindows) {
+    for (const args of mediaInfoArgumentVariants(absPath, isWindows)) {
+      pushCommand('cmd', ['/c', 'mediaInfo', ...args], 'MediaInfo (PATH)');
+    }
   }
 
-  const executable = resolveMediaInfoExecutable();
   if (executable) {
-    commands.push({
-      file: executable,
-      args: ['--output=json', absPath],
-      source: `MediaInfo (${executable})`
-    });
+    for (const args of mediaInfoArgumentVariants(absPath, isWindows)) {
+      pushCommand(executable, args, `MediaInfo (${executable})`);
+    }
   }
 
-  if (process.platform !== 'win32' && !commands.length) {
-    commands.push({
-      file: 'mediainfo',
-      args: ['--output=json', absPath],
-      source: 'MediaInfo (PATH)'
-    });
+  if (!isWindows && !commands.length) {
+    for (const args of mediaInfoArgumentVariants(absPath, isWindows)) {
+      pushCommand('mediainfo', args, 'MediaInfo (PATH)');
+    }
   }
+
+  return commands;
+}
+
+function mediaInfoArgumentVariants(absPath: string, isWindows: boolean): string[][] {
+  const jsonVariants = isWindows
+    ? [
+        ['--output=json', absPath],
+        ['output=JSON', absPath],
+        ['output=json', absPath],
+        ['--Output=JSON', absPath]
+      ]
+    : [
+        ['output=JSON', absPath],
+        ['output=json', absPath],
+        ['--Output=JSON', absPath],
+        ['--output=json', absPath]
+      ];
+  return [...jsonVariants, [absPath]];
+}
+
+async function tryMediaInfo(absPath: string, mediaType: MediaType): Promise<MediaMetadataInfo | null> {
+  const commands = mediaInfoProbeCommands(absPath);
 
   let bestFailure: MediaInfoFailure | null = commands.length
     ? null

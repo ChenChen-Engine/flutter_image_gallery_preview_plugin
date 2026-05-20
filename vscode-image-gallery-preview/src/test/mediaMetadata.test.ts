@@ -241,6 +241,29 @@ suite('media metadata helper', () => {
     assert.strictEqual(rowValue(info!, 'Audio', 'Sampling rate'), '44.1 kHz');
   });
 
+  test('builds macOS MediaInfo output argument commands before dashed output flags', () => {
+    const metadataModule = require('../mediaMetadata') as Record<string, unknown>;
+    const mediaInfoProbeCommands = metadataModule.mediaInfoProbeCommands as ((absPath: string, platform: NodeJS.Platform, executable: string | null) => Array<{
+      file: string;
+      args: string[];
+      source: string;
+    }>) | undefined;
+
+    assert.ok(mediaInfoProbeCommands, 'expected mediaInfoProbeCommands to be exported for command tests');
+
+    const commands = mediaInfoProbeCommands!('/Users/demo/assets/video/intro.mp4', 'darwin', '/opt/homebrew/bin/mediainfo');
+
+    assert.deepStrictEqual(commands[0], {
+      file: '/opt/homebrew/bin/mediainfo',
+      args: ['output=JSON', '/Users/demo/assets/video/intro.mp4'],
+      source: 'MediaInfo (/opt/homebrew/bin/mediainfo)'
+    });
+    assert.deepStrictEqual(commands[1].args, ['output=json', '/Users/demo/assets/video/intro.mp4']);
+    assert.deepStrictEqual(commands[2].args, ['--Output=JSON', '/Users/demo/assets/video/intro.mp4']);
+    assert.deepStrictEqual(commands[3].args, ['--output=json', '/Users/demo/assets/video/intro.mp4']);
+    assert.deepStrictEqual(commands[4].args, ['/Users/demo/assets/video/intro.mp4']);
+  });
+
   test('falls back to ffprobe and built-in metadata when MediaInfo is unavailable', async () => {
     const metadataModule = require('../mediaMetadata') as Record<string, unknown>;
     const resolveIndexedMediaInfo = metadataModule.resolveIndexedMediaInfo as ((item: GalleryAssetItem, deps: {

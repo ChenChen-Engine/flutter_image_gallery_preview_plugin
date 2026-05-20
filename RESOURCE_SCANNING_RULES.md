@@ -77,6 +77,8 @@ Both plugins align on:
 - Windows MediaInfo CLI is attempted first with `cmd /c mediaInfo --output=json <file>`.
 - Some MediaInfo CLI builds return the default readable text report for that lowercase flag; hosts parse both JSON and text reports.
 - Windows direct executable fallback scans PATH plus common CLI install directories on all local drive letters, including `MediaInfo_Cli`.
+- macOS / Linux try `mediainfo output=JSON <file>` and `mediainfo output=json <file>` before dashed output flags.
+- macOS common Homebrew and MacPorts paths are checked because IDEs launched from Finder or Dock may not inherit shell `PATH`.
 - Direct executable discovery is cached per plugin process; do not re-scan PATH or version-probe MediaInfo for every item.
 - Metadata extraction is bounded parallel work with a maximum of 6 concurrent items per host.
 - A single item is allowed to time out and fall back to lightweight metadata; indexing continues.
@@ -91,7 +93,8 @@ Both plugins align on:
 - `Sync` performs incremental discovery and reuses valid indexed metadata for unchanged files.
 - `Refresh` forces full reindexing and metadata cache rebuild.
 - IntelliJ publishes `phase`, `indexedCount`, `metadataCount`, `currentPath`, optional `fallbackSource`, `elapsedMillis`, `workerStatus`, and `diagnostic`.
-- IntelliJ also shows a host-side loading fallback while JCEF is starting.
+- IntelliJ also shows a host-side loading state while JCEF is starting.
+- IntelliJ requires JCEF and does not open a system-browser fallback gallery when JCEF is unavailable.
 - VSCode publishes worker `phase`, `count`, `total`, `currentPath`, `partialCount`, `fallbackSource`, `elapsedMillis`, `lastHeartbeatMillis`, `workerStatus`, and `diagnostic`, and mirrors them to an OutputChannel.
 - The shared web UI receives VSCode `webview.postMessage` payloads through a `window.message` bridge to `galleryHostReceive`; partial `assets` messages must not hide loading.
 

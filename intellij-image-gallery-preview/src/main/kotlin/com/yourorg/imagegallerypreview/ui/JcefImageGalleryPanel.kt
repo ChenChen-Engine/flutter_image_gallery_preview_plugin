@@ -39,7 +39,6 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import javax.swing.JButton
 import javax.swing.JPanel
 import javax.swing.SwingConstants
 
@@ -55,7 +54,6 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     private val messageQuery: JBCefJSQuery?
     private val mediaServer: LocalMediaStreamServer?
     private val videoThumbnailProvider: VideoThumbnailProvider?
-    private val externalBrowserServer: ExternalGalleryBrowserServer?
     private val latestItems = mutableListOf<GalleryAssetItem>()
 
     @Volatile
@@ -78,18 +76,8 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             browser = null
             messageQuery = null
             mediaServer = null
-            val thumbnails = VideoThumbnailProvider(logger)
-            val externalServer = ExternalGalleryBrowserServer(logger) { rawMessage ->
-                handleWebMessage(rawMessage)
-            }
-            videoThumbnailProvider = thumbnails
-            externalBrowserServer = externalServer
-            Disposer.register(this, thumbnails)
-            Disposer.register(this, externalServer)
-            add(createExternalBrowserPanel(externalServer.url), BorderLayout.CENTER)
-            ApplicationManager.getApplication().invokeLater {
-                BrowserUtil.browse(externalServer.url)
-            }
+            videoThumbnailProvider = null
+            add(createJcefUnavailablePanel(), BorderLayout.CENTER)
         } else {
             browser = JBCefBrowser()
             messageQuery = JBCefJSQuery.create(browser)
@@ -97,7 +85,6 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             val thumbnails = VideoThumbnailProvider(logger)
             mediaServer = server
             videoThumbnailProvider = thumbnails
-            externalBrowserServer = null
             Disposer.register(this, browser)
             Disposer.register(this, messageQuery)
             Disposer.register(this, server)
@@ -119,7 +106,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             }
         }
 
-        if (browser != null || externalBrowserServer != null) {
+        if (browser != null) {
             service.addListener(itemsListener)
             service.addStatusListener(statusListener)
         }
@@ -306,7 +293,6 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
 
     private fun sendToWeb(payload: Any) {
         val json = gson.toJson(payload)
-        externalBrowserServer?.send(json)
         val targetBrowser = browser ?: return
         ApplicationManager.getApplication().invokeLater {
             if (!isDisplayable) return@invokeLater
@@ -319,16 +305,6 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     }
 
     private fun previewSrcFor(item: GalleryAssetItem, file: File): String? {
-        externalBrowserServer?.let { server ->
-            return when {
-                item.mediaType == "video" -> videoThumbnailProvider?.posterFileFor(file)
-                    ?.let { server.urlForAsset(it) }
-                    ?: server.urlForAsset(file)
-                item.mediaType == "image" || item.formatFamily == "lottie" -> server.urlForAsset(file)
-                else -> null
-            }
-        }
-
         return when {
             item.mediaType == "video" -> videoThumbnailProvider?.posterUriFor(file)
                 ?: mediaServer?.urlFor(file)
@@ -430,22 +406,26 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         return panel
     }
 
-    private fun createExternalBrowserPanel(url: String): JPanel {
-        val panel = JPanel(BorderLayout(0, 12)).apply {
+    private fun createJcefUnavailablePanel(): JPanel {
+        val panel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(28)
             background = JBColor.PanelBackground
         }
         val label = JBLabel(
-            "<html><div style='text-align:center;'>JCEF is not available in this IDE runtime.<br/>Image Gallery Preview has opened in your system browser.</div></html>",
+            """
+            <html>
+              <div style='text-align:center;font-size:24px;line-height:1.55;'>
+                当前 IDE 运行时不支持 JCEF。<br/>
+                Image Gallery Preview 需要带 JCEF 的 JetBrains Runtime。<br/>
+                请在 Help &gt; Find Action 中搜索 Choose Boot Runtime，选择与 Mac 架构匹配且包含 JCEF 的 JetBrains Runtime。
+              </div>
+            </html>
+            """.trimIndent(),
             SwingConstants.CENTER
         ).apply {
-            font = font.deriveFont(Font.BOLD, 15f)
-        }
-        val open = JButton("Open in Browser").apply {
-            addActionListener { BrowserUtil.browse(url) }
+            font = font.deriveFont(Font.BOLD, 24f)
         }
         panel.add(label, BorderLayout.CENTER)
-        panel.add(open, BorderLayout.SOUTH)
         return panel
     }
 

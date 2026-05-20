@@ -36,25 +36,28 @@
         </select>
       </div>
       <div class="toolbar-utility-row">
-        <div class="zoom-cluster" aria-label="Preview size">
-          <div class="zoom-controls">
-            <button id="zoomOutButton" class="icon-button" type="button" title="Shrink preview">-</button>
-            <button id="zoomResetButton" class="icon-button" type="button" title="Reset preview size" aria-label="Reset preview size">
-              <svg class="button-svg" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M7 8H4V5"/>
-                <path d="M4.7 8A8 8 0 1 1 4 12"/>
-                <path d="M10 9.5h4v5h-4z"/>
-              </svg>
-            </button>
-            <button id="zoomInButton" class="icon-button" type="button" title="Enlarge preview">+</button>
-          </div>
-        </div>
         <div id="statusText" class="status-text">Visible 0 / Indexed 0</div>
       </div>
     </header>
 
     <section id="galleryRoot" class="gallery-root" aria-live="polite"></section>
     <div id="loadMoreSentinel" class="load-more-sentinel" aria-hidden="true"></div>
+    <div class="zoom-cluster" aria-label="Preview size">
+      <div class="zoom-controls">
+        <button id="zoomOutButton" class="icon-button" type="button" title="Shrink preview">-</button>
+        <button id="zoomResetButton" class="icon-button" type="button" title="Reset preview size" aria-label="Reset preview size">
+          <svg class="button-svg reset-zoom-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 8V5h3"/>
+            <path d="M19 8V5h-3"/>
+            <path d="M5 16v3h3"/>
+            <path d="M19 16v3h-3"/>
+            <path d="M9 12h6"/>
+            <path d="M12 9v6"/>
+          </svg>
+        </button>
+        <button id="zoomInButton" class="icon-button" type="button" title="Enlarge preview">+</button>
+      </div>
+    </div>
   </main>
 
   <div id="loadingOverlay" class="loading-overlay visible">
@@ -86,7 +89,12 @@
               <path d="M20 20v-4h-4"/>
             </svg>
           </button>
-          <button class="modal-action modal-close" type="button" data-close-modal aria-label="Close">x</button>
+          <button class="modal-action modal-close" type="button" data-close-modal aria-label="Close" title="Close">
+            <svg class="button-svg close-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 7l10 10"/>
+              <path d="M17 7L7 17"/>
+            </svg>
+          </button>
         </div>
       </div>
       <div id="infoContent" class="info-content"></div>

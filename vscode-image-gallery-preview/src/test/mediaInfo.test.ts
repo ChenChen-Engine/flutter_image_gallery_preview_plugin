@@ -48,6 +48,20 @@ suite('media info tooling', () => {
     assert.strictEqual(found, expected);
   });
 
+  test('finds MediaInfo from common macOS Homebrew path', () => {
+    const expected = '/opt/homebrew/bin/mediainfo';
+    const found = findMediaInfoExecutable(
+      {},
+      (candidate) => candidate === expected,
+      () => true,
+      'darwin',
+      () => 'MediaInfoLib - v25.04',
+      () => true
+    );
+
+    assert.strictEqual(found, expected);
+  });
+
   test('ignores MediaInfo GUI candidate that does not answer as CLI', () => {
     const gui = 'D:\\Program Files\\MediaInfo\\MediaInfo.exe';
     const found = findMediaInfoExecutable(

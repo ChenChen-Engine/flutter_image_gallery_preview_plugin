@@ -164,20 +164,27 @@ input {
 }
 
 .zoom-cluster {
-  display: inline-flex;
+  position: fixed;
+  right: 4px;
+  bottom: 20px;
+  z-index: 60;
+  display: flex;
   align-items: center;
   color: var(--muted);
   white-space: nowrap;
 }
 
 .zoom-controls {
-  display: inline-flex;
+  display: flex;
+  flex-direction: column;
   gap: 0;
   align-items: center;
   border: 1px solid var(--soft-border);
-  border-radius: 10px;
+  border-radius: 14px;
   overflow: hidden;
-  background: var(--panel);
+  background: rgba(20, 24, 36, .88);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, .28);
+  backdrop-filter: blur(16px);
 }
 
 .icon-button {
@@ -186,7 +193,7 @@ input {
   height: 32px;
   padding: 0;
   border: 0;
-  border-right: 1px solid var(--soft-border);
+  border-bottom: 1px solid var(--soft-border);
   border-radius: 0;
   cursor: pointer;
   font-size: 16px;
@@ -195,7 +202,7 @@ input {
 }
 
 .icon-button:last-child {
-  border-right: 0;
+  border-bottom: 0;
 }
 
 .icon-button:hover {
@@ -212,6 +219,17 @@ input {
   stroke-width: 1.9;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.reset-zoom-svg {
+  width: 19px;
+  height: 19px;
+}
+
+.close-svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 2.4;
 }
 
 .icon-button:disabled {
@@ -814,6 +832,9 @@ input {
 }
 
 .modal-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 32px;
   height: 32px;
   border: 1px solid var(--soft-border);

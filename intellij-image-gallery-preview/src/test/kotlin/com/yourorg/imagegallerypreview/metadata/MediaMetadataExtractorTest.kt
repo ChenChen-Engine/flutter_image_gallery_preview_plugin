@@ -76,7 +76,36 @@ class MediaMetadataExtractorTest {
         )
 
         assertEquals(listOf("cmd", "/c", "mediaInfo", "--output=json", "C:/demo/assets/video/intro.mp4"), commands.first())
-        assertEquals(listOf("D:/Tools/MediaInfo/MediaInfo.exe", "--output=json", "C:/demo/assets/video/intro.mp4"), commands[1])
+        assertEquals(listOf("cmd", "/c", "mediaInfo", "output=JSON", "C:/demo/assets/video/intro.mp4"), commands[1])
+        assertEquals(listOf("D:/Tools/MediaInfo/MediaInfo.exe", "--output=json", "C:/demo/assets/video/intro.mp4"), commands[5])
+    }
+
+    @Test
+    fun `tries Mac MediaInfo output argument before GNU style output flag`() {
+        val commands = MediaMetadataExtractor.mediaInfoProbeCommands(
+            absPath = "/Users/demo/project/assets/video/intro.mp4",
+            osName = "Mac OS X",
+            configuredExecutable = "/opt/homebrew/bin/mediainfo"
+        )
+
+        assertEquals(listOf("/opt/homebrew/bin/mediainfo", "output=JSON", "/Users/demo/project/assets/video/intro.mp4"), commands[0])
+        assertEquals(listOf("/opt/homebrew/bin/mediainfo", "output=json", "/Users/demo/project/assets/video/intro.mp4"), commands[1])
+        assertEquals(listOf("/opt/homebrew/bin/mediainfo", "--Output=JSON", "/Users/demo/project/assets/video/intro.mp4"), commands[2])
+        assertEquals(listOf("/opt/homebrew/bin/mediainfo", "--output=json", "/Users/demo/project/assets/video/intro.mp4"), commands[3])
+        assertEquals(listOf("/opt/homebrew/bin/mediainfo", "/Users/demo/project/assets/video/intro.mp4"), commands[4])
+    }
+
+    @Test
+    fun `finds MediaInfo from common macOS Homebrew path`() {
+        val found = MediaMetadataExtractor.findMediaInfoExecutable(
+            env = emptyMap(),
+            pathExists = { it == "/opt/homebrew/bin/mediainfo" },
+            pathExecutable = { true },
+            osName = "Mac OS X",
+            commandRunner = { "MediaInfoLib - v25.04" }
+        )
+
+        assertEquals("/opt/homebrew/bin/mediainfo", found)
     }
 
     @Test

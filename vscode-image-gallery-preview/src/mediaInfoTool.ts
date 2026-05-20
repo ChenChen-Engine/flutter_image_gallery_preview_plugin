@@ -84,6 +84,17 @@ export function findMediaInfoExecutable(
       const found = checkCandidate(candidate);
       if (found) return found;
     }
+  } else {
+    const commonPaths = [
+      '/opt/homebrew/bin/mediainfo',
+      '/usr/local/bin/mediainfo',
+      '/opt/local/bin/mediainfo',
+      '/usr/bin/mediainfo'
+    ];
+    for (const candidate of commonPaths) {
+      const found = checkCandidate(candidate);
+      if (found) return found;
+    }
   }
 
   return null;
