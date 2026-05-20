@@ -59,6 +59,13 @@ intellijPlatform {
 tasks {
     named("verifyPluginProjectConfiguration") { enabled = false }
     named("buildSearchableOptions") { enabled = false }
+    named("buildPlugin") {
+        doFirst {
+            val distributionsDir = layout.buildDirectory.dir("distributions").get().asFile
+            distributionsDir.mkdirs()
+            delete(distributionsDir.resolve("intellij-image-gallery-preview-${project.version}.zip"))
+        }
+    }
     named<Copy>("processResources") {
         from(rootProject.layout.projectDirectory.dir("../gallery-web")) {
             into("gallery-web")

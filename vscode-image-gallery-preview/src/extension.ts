@@ -909,29 +909,61 @@ export async function openResourceStringLinkSettings(options: SettingsOpenOption
   throw new Error(errors.join('; ') || `Unable to open ${RESOURCE_STRING_LINKS_SETTING_KEY}`);
 }
 
+function readResourceStringLinksEnabled(): boolean {
+  return vscode.workspace.getConfiguration(RESOURCE_STRING_LINKS_SETTING_SECTION)
+    .get<boolean>(RESOURCE_STRING_LINKS_SETTING_NAME, false);
+}
+
 export function activate(context: vscode.ExtensionContext): void {
-  const resourceReferences = new ResourceReferenceState(
-    vscode.workspace.getConfiguration(RESOURCE_STRING_LINKS_SETTING_SECTION)
-      .get<boolean>(RESOURCE_STRING_LINKS_SETTING_NAME, false)
-  );
+  const resourceReferences = new ResourceReferenceState(readResourceStringLinksEnabled());
   const provider = new ImageGalleryViewProvider(context, resourceReferences);
-  const resourceLinkProvider = new ResourceDocumentLinkProvider(resourceReferences);
-  const resourceDefinitionProvider = new ResourceDefinitionProvider(resourceReferences);
+  let resourceLinkDisposables: vscode.Disposable[] = [];
+  const disposeResourceLinkProviders = () => {
+    for (const disposable of resourceLinkDisposables.splice(0)) {
+      disposable.dispose();
+    }
+  };
+  const registerResourceLinkProviders = () => {
+    if (resourceLinkDisposables.length) return;
+    resourceLinkDisposables = [
+      vscode.languages.registerDocumentLinkProvider({ scheme: 'file' }, new ResourceDocumentLinkProvider(resourceReferences)),
+      vscode.languages.registerDefinitionProvider({ scheme: 'file' }, new ResourceDefinitionProvider(resourceReferences))
+    ];
+  };
+  const refreshVisibleResourceLinks = () => {
+    for (const editor of vscode.window.visibleTextEditors ?? []) {
+      if (editor.document.uri.scheme === 'file') {
+        void vscode.commands.executeCommand('vscode.executeLinkProvider', editor.document.uri);
+      }
+    }
+  };
+  const syncResourceStringLinkSetting = (forceRefresh = false) => {
+    const enabled = readResourceStringLinksEnabled();
+    const changed = resourceReferences.enabled !== enabled;
+    resourceReferences.setEnabled(enabled);
+    if (enabled) {
+      registerResourceLinkProviders();
+    } else {
+      disposeResourceLinkProviders();
+    }
+    if (changed || forceRefresh) refreshVisibleResourceLinks();
+  };
+  const settingsPoll = setInterval(syncResourceStringLinkSetting, 1000);
   provider.start();
+  syncResourceStringLinkSetting();
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ImageGalleryViewProvider.viewId, provider),
-    vscode.languages.registerDocumentLinkProvider({ scheme: 'file' }, resourceLinkProvider),
-    vscode.languages.registerDefinitionProvider({ scheme: 'file' }, resourceDefinitionProvider),
-    vscode.workspace.onDidChangeConfiguration((event) => {
-      const enabled = vscode.workspace.getConfiguration(RESOURCE_STRING_LINKS_SETTING_SECTION)
-        .get<boolean>(RESOURCE_STRING_LINKS_SETTING_NAME, false);
-      if (!event.affectsConfiguration(RESOURCE_STRING_LINKS_SETTING_KEY) && resourceReferences.enabled === enabled) return;
-      resourceReferences.setEnabled(enabled);
-    }),
+    vscode.workspace.onDidChangeConfiguration(() => syncResourceStringLinkSetting(true)),
+    vscode.window.onDidChangeActiveTextEditor(() => syncResourceStringLinkSetting(true)),
+    vscode.window.onDidChangeVisibleTextEditors(() => syncResourceStringLinkSetting(true)),
+    vscode.window.onDidChangeWindowState(() => syncResourceStringLinkSetting(true)),
+    vscode.workspace.onDidCloseTextDocument(() => syncResourceStringLinkSetting(true)),
     vscode.commands.registerCommand('imageGalleryPreview.refresh', () => provider.refresh()),
     vscode.commands.registerCommand('imageGalleryPreview.openSettings', () => provider.openSettingsCommand()),
     vscode.commands.registerCommand('imageGalleryPreview.openResource', (absPath: string) => openResourceByPath(absPath)),
+    { dispose: () => clearInterval(settingsPoll) },
+    { dispose: () => disposeResourceLinkProviders() },
     { dispose: () => resourceReferences.dispose() },
     { dispose: () => provider.dispose() }
   );
