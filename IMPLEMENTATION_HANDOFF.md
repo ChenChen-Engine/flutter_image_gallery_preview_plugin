@@ -155,6 +155,10 @@ The shared web layer does not guess platform copy rules. Host code sends the fin
   3. `ffprobe` to fill audio / video stream and duration gaps
   4. built-in fallback metadata
 - Metadata is enriched with bounded parallelism (`max 6`) after discovery and before publish.
+- Normal sync reuses metadata for unchanged files from process memory and persisted cache:
+  - IntelliJ stores non-retryable metadata under the IDE system path in `image-gallery-preview/media-metadata-cache-v2.json`.
+  - VSCode stores non-retryable metadata in `workspaceState` under `imageGalleryPreview.metadataCache.v2`.
+  - Forced `Refresh` bypasses / clears these caches and rebuilds metadata.
 - A single item can time out and fall back to lightweight metadata so indexing continues; timed-out metadata is not treated as rich cache, and clicking `i` retries extraction on demand.
 - MediaInfo JSON keeps all primitive track fields; row truncation is intentionally avoided so the `i` dialog can show complete CLI output.
 - MediaInfo text reports are also parsed because `mediaInfo --output=json <file>` can return the default readable report on MediaInfo CLI v26.05.
@@ -218,6 +222,19 @@ Relevant files:
 - VSCode mirrors worker diagnostics into the `Image Gallery Preview` OutputChannel; if loading gets stuck, collect both overlay text and OutputChannel lines beginning with `[sync]`, `[refresh]`, or `[worker:...]`.
 - VSCode webview messages now enter the shared UI through a `window.message` bridge to `galleryHostReceive`; this is required for host-sent `assets` and `loadingState` payloads to be observed.
 - Partial `assets` payloads no longer hide the loading overlay; the overlay hides only when `loadingState.loading` becomes false.
+- VSCode partial asset publishes are intentionally throttled to larger batches and coalesced to the newest pending batch to avoid repeated full webview serialization / re-render while metadata is still resolving.
+
+## Shared web performance notes
+
+- The web layer prepares each incoming asset once:
+  - cached filename
+  - cached lowercase search text
+  - cached project / module keys
+  - pre-sorted item order
+- Filtering preserves the pre-sorted order and avoids sorting on every dropdown or search change.
+- Card batches are appended through `DocumentFragment` per grid, reducing live DOM append churn.
+- Tile and grid CSS use containment / `content-visibility` where supported to reduce offscreen layout and paint work.
+- The visible batch size is intentionally smaller than earlier versions to reduce JCEF / WebView input jank during large renders.
 
 ### Tradeoff
 

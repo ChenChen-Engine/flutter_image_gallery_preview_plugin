@@ -14,6 +14,8 @@ const SCAN_STALE_MS = 12_000;
 const RESOURCE_STRING_LINKS_SETTING_SECTION = 'imageGalleryPreview';
 const RESOURCE_STRING_LINKS_SETTING_NAME = 'resourceStringLinksEnabled';
 const RESOURCE_STRING_LINKS_SETTING_KEY = `${RESOURCE_STRING_LINKS_SETTING_SECTION}.${RESOURCE_STRING_LINKS_SETTING_NAME}`;
+const METADATA_CACHE_STORAGE_KEY = 'imageGalleryPreview.metadataCache.v2';
+const MAX_PERSISTED_METADATA_ENTRIES = 5_000;
 const IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'pdf', 'heic', 'heif', 'apng', 'avif', 'ico', 'lottie', 'vector_xml']);
 const AUDIO_FORMATS = new Set(['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac', 'amr', 'mid', 'midi', 'caf', 'wma', 'aiff', 'aif', 'alac', 'mka']);
 const VIDEO_FORMATS = new Set(['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', '3gp', '3gpp', 'mpeg', 'mpg', 'ts', 'm2ts', 'wmv', 'flv']);
@@ -134,6 +136,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   private duplicatePromptedKeys = new Set<string>();
   private infoCache = new Map<string, MediaMetadataInfo>();
   private loadingSeq = 0;
+  private persistedMetadataCache: Map<string, CachedMetadata>;
   private readonly output = vscode.window.createOutputChannel('Image Gallery Preview');
   private refreshPending = false;
   private refreshPendingForce = false;
@@ -145,7 +148,9 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly resourceReferences: ResourceReferenceState
-  ) {}
+  ) {
+    this.persistedMetadataCache = readPersistedMetadataCache(context.workspaceState);
+  }
 
   start(): void {
     if (this.started) return;
@@ -335,7 +340,9 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
       }
 
       const roots = vscode.workspace.workspaceFolders.map((folder) => folder.uri.fsPath);
-      const metadataCache = metadataByKey(this.cachedItems);
+      const metadataCache = forceReindex
+        ? new Map<string, CachedMetadata>()
+        : mergeMetadataCaches(this.persistedMetadataCache, metadataByKey(this.cachedItems));
       const normalizeItems = (rawItems: GalleryAssetItem[]) => rawItems.map((item) => {
         const normalized = {
           ...item,
@@ -364,6 +371,26 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
           this.output.appendLine(`[${operation}] partial publish ${partialItems.length} assets`);
         }
       };
+      let pendingPartialPublish: { rawItems: GalleryAssetItem[]; done: boolean } | null = null;
+      let partialPublishTask: Promise<void> = Promise.resolve();
+      let partialPublishRunning = false;
+      const schedulePartialPublish = (rawItems: GalleryAssetItem[], done: boolean) => {
+        pendingPartialPublish = { rawItems, done };
+        if (partialPublishRunning) return;
+        partialPublishRunning = true;
+        partialPublishTask = (async () => {
+          try {
+            while (pendingPartialPublish) {
+              const next = pendingPartialPublish;
+              pendingPartialPublish = null;
+              await publishPartial(next.rawItems, next.done);
+            }
+          } finally {
+            partialPublishRunning = false;
+          }
+        })();
+        void partialPublishTask;
+      };
 
       const scannedItems = await scanWorkspaceInWorker(
         roots,
@@ -373,15 +400,18 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
           void this.postLoadingState(progress);
         },
         (partialItems, done) => {
-          void publishPartial(partialItems, done);
+          schedulePartialPublish(partialItems, done);
         }
       );
 
+      await partialPublishTask;
       const items = normalizeItems(scannedItems);
       this.cachedItems = items;
       this.duplicateIndex = this.buildDuplicateIndex(items);
       this.infoCache = primeInfoCacheFromItems(items);
       this.resourceReferences.updateItems(items);
+      this.persistedMetadataCache = updatePersistedMetadataCache(this.persistedMetadataCache, items);
+      await writePersistedMetadataCache(this.context.workspaceState, this.persistedMetadataCache);
 
       await this.postAssets();
       const elapsed = Date.now() - started;
@@ -773,6 +803,60 @@ interface CachedMetadata {
   mediaInfo?: GalleryAssetItem['mediaInfo'];
 }
 
+interface PersistedMetadataEntry {
+  key: string;
+  value: CachedMetadata;
+}
+
+function readPersistedMetadataCache(memento: vscode.Memento): Map<string, CachedMetadata> {
+  const entries = memento.get<PersistedMetadataEntry[]>(METADATA_CACHE_STORAGE_KEY, []);
+  const cache = new Map<string, CachedMetadata>();
+  if (!Array.isArray(entries)) return cache;
+  for (const entry of entries) {
+    if (!entry?.key || !entry.value) continue;
+    if (isRetryableMediaInfo(entry.value.mediaInfo)) continue;
+    cache.set(entry.key, entry.value);
+  }
+  return cache;
+}
+
+async function writePersistedMetadataCache(
+  memento: vscode.Memento,
+  cache: Map<string, CachedMetadata>
+): Promise<void> {
+  const entries = Array.from(cache.entries())
+    .slice(-MAX_PERSISTED_METADATA_ENTRIES)
+    .map(([key, value]) => ({ key, value }));
+  await memento.update(METADATA_CACHE_STORAGE_KEY, entries);
+}
+
+function mergeMetadataCaches(
+  base: Map<string, CachedMetadata>,
+  overlay: Map<string, CachedMetadata>
+): Map<string, CachedMetadata> {
+  const merged = new Map(base);
+  for (const [key, value] of overlay) {
+    merged.set(key, value);
+  }
+  return trimMetadataCache(merged);
+}
+
+function updatePersistedMetadataCache(
+  existing: Map<string, CachedMetadata>,
+  items: GalleryAssetItem[]
+): Map<string, CachedMetadata> {
+  return mergeMetadataCaches(existing, metadataByKey(items));
+}
+
+function trimMetadataCache(cache: Map<string, CachedMetadata>): Map<string, CachedMetadata> {
+  if (cache.size <= MAX_PERSISTED_METADATA_ENTRIES) return cache;
+  const trimmed = new Map<string, CachedMetadata>();
+  for (const [key, value] of Array.from(cache.entries()).slice(-MAX_PERSISTED_METADATA_ENTRIES)) {
+    trimmed.set(key, value);
+  }
+  return trimmed;
+}
+
 function metadataByKey(items: GalleryAssetItem[]): Map<string, CachedMetadata> {
   const cache = new Map<string, CachedMetadata>();
   for (const item of items) {
@@ -788,7 +872,7 @@ function metadataByKey(items: GalleryAssetItem[]): Map<string, CachedMetadata> {
 }
 
 function metadataCacheKey(item: GalleryAssetItem): string {
-  return `${normalizePath(item.absPath)}|${item.mtime}|${item.mediaType}`;
+  return `${normalizePath(item.absPath)}|${item.mtime}|${item.md5 || ''}|${item.mediaType}`;
 }
 
 function isRetryableMediaInfo(info: MediaMetadataInfo | null | undefined): boolean {

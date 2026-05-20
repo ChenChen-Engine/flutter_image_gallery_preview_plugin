@@ -397,12 +397,16 @@ input {
   grid-template-columns: repeat(auto-fill, minmax(var(--tile-min), 1fr));
   gap: 22px 18px;
   align-items: start;
+  contain: layout paint;
 }
 
 .tile {
   min-width: 0;
   margin: 0;
   color: var(--text);
+  contain: layout paint style;
+  content-visibility: auto;
+  contain-intrinsic-size: 210px 240px;
 }
 
 .thumb-wrap {
@@ -427,14 +431,14 @@ input {
   background-size: 18px 18px;
   background-position: 0 0, 0 9px, 9px -9px, -9px 0;
   cursor: copy;
-  transition: border-color .16s ease, transform .16s ease, box-shadow .16s ease;
+  transition: border-color .12s ease, transform .12s ease, box-shadow .12s ease;
   overflow: hidden;
 }
 
 .tile:hover .thumb-button {
   border-color: var(--accent);
-  transform: translateY(-2px);
-  box-shadow: 0 12px 34px rgba(0, 0, 0, .24);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .20);
 }
 
 .thumb-img,

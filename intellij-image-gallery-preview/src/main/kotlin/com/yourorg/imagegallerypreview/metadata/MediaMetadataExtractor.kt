@@ -1,7 +1,10 @@
 package com.yourorg.imagegallerypreview.metadata
 
+import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.reflect.TypeToken
+import com.intellij.openapi.application.PathManager
 import com.yourorg.imagegallerypreview.model.GalleryAssetItem
 import com.yourorg.imagegallerypreview.util.AssetFileUtil
 import java.io.File
@@ -25,12 +28,21 @@ data class MediaMetadataResult(
 
 object MediaMetadataExtractor {
     private const val MEDIAINFO_DOWNLOAD_URL = "https://mediaarea.net/en/MediaInfo/Download/Windows"
+    private const val CACHE_VERSION = 2
+    private const val MAX_PERSISTED_CACHE_ENTRIES = 20_000
     private const val UNKNOWN = "Unknown"
     private const val TIMEOUT_FALLBACK_SOURCE = "Timed out fallback"
 
+    private val gson = Gson()
     private val cache = ConcurrentHashMap<String, MediaMetadataResult>()
+    private val diskCacheLoaded = AtomicBoolean(false)
     private val fxInitialized = AtomicBoolean(false)
     private var mediaInfoExecutableResolver: () -> String? = createMediaInfoExecutableResolver()
+
+    private data class PersistedMediaMetadataCache(
+        val version: Int = CACHE_VERSION,
+        val entries: Map<String, MediaMetadataResult> = emptyMap()
+    )
 
     fun infoFor(item: GalleryAssetItem, force: Boolean = false): MediaMetadataInfo = extractFor(item, force).info
 
@@ -60,6 +72,22 @@ object MediaMetadataExtractor {
 
     fun clearCache() {
         cache.clear()
+        diskCacheLoaded.set(true)
+        runCatching { metadataCacheFile().delete() }
+    }
+
+    fun persistCache() {
+        ensureDiskCacheLoaded()
+        val snapshot = cache.entries
+            .asSequence()
+            .filterNot { (_, result) -> isRetryableFallback(result.info) }
+            .take(MAX_PERSISTED_CACHE_ENTRIES)
+            .associate { it.key to it.value }
+        runCatching {
+            val target = metadataCacheFile()
+            target.parentFile?.mkdirs()
+            target.writeText(gson.toJson(PersistedMediaMetadataCache(entries = snapshot)))
+        }
     }
 
     internal fun createMediaInfoExecutableResolver(
@@ -83,6 +111,7 @@ object MediaMetadataExtractor {
     }
 
     fun extractFor(item: GalleryAssetItem, force: Boolean = false): MediaMetadataResult {
+        ensureDiskCacheLoaded()
         val file = File(item.absPath)
         val key = "${item.absPath}|${item.mtime}|${file.length()}|${item.mediaType}"
         if (force) {
@@ -94,6 +123,26 @@ object MediaMetadataExtractor {
         return cache.computeIfAbsent(key) {
             extract(item, file)
         }
+    }
+
+    private fun ensureDiskCacheLoaded() {
+        if (!diskCacheLoaded.compareAndSet(false, true)) return
+        runCatching {
+            val file = metadataCacheFile()
+            if (!file.isFile) return@runCatching
+            val type = object : TypeToken<PersistedMediaMetadataCache>() {}.type
+            val persisted = gson.fromJson<PersistedMediaMetadataCache>(file.readText(), type) ?: return@runCatching
+            if (persisted.version != CACHE_VERSION) return@runCatching
+            for ((key, value) in persisted.entries) {
+                if (!isRetryableFallback(value.info)) {
+                    cache.putIfAbsent(key, value)
+                }
+            }
+        }
+    }
+
+    private fun metadataCacheFile(): File {
+        return File(PathManager.getSystemPath(), "image-gallery-preview/media-metadata-cache-v$CACHE_VERSION.json")
     }
 
     fun timeoutFallbackFor(item: GalleryAssetItem, reason: String = "metadata extraction timed out"): MediaMetadataResult {

@@ -80,6 +80,8 @@ Both plugins align on:
 - macOS / Linux try `mediainfo output=JSON <file>` and `mediainfo output=json <file>` before dashed output flags.
 - macOS common Homebrew and MacPorts paths are checked because IDEs launched from Finder or Dock may not inherit shell `PATH`.
 - Direct executable discovery is cached per plugin process; do not re-scan PATH or version-probe MediaInfo for every item.
+- Non-retryable metadata is persisted for unchanged files and reused by normal `Sync`.
+- `Refresh` clears/bypasses persisted metadata and should be treated as the expensive full rebuild path.
 - Metadata extraction is bounded parallel work with a maximum of 6 concurrent items per host.
 - A single item is allowed to time out and fall back to lightweight metadata; indexing continues.
 - Timeout, parse-empty, command-failed, and fallback states are represented in the metadata source label so both the loading overlay and `i` dialog explain why full MediaInfo rows are missing.
@@ -92,6 +94,7 @@ Both plugins align on:
 
 - `Sync` performs incremental discovery and reuses valid indexed metadata for unchanged files.
 - `Refresh` forces full reindexing and metadata cache rebuild.
+- Hosts should throttle partial asset publishes; progress messages can be frequent, but full asset payloads should not be emitted per item. VSCode host-side partial publishes should also be coalesced so only the newest pending payload is serialized.
 - IntelliJ publishes `phase`, `indexedCount`, `metadataCount`, `currentPath`, optional `fallbackSource`, `elapsedMillis`, `workerStatus`, and `diagnostic`.
 - IntelliJ also shows a host-side loading state while JCEF is starting.
 - IntelliJ requires JCEF and does not open a system-browser fallback gallery when JCEF is unavailable.

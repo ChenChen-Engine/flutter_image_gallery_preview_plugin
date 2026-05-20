@@ -45,8 +45,8 @@ interface RunScanWorkerArgs {
 
 const DEFAULT_HEARTBEAT_MS = 1000;
 const DEFAULT_METADATA_PARALLELISM = Math.min(6, Math.max(2, os.cpus()?.length ?? 2));
-const ASSET_PUBLISH_BATCH_SIZE = 10;
-const ASSET_PUBLISH_INTERVAL_MS = 500;
+const ASSET_PUBLISH_BATCH_SIZE = 200;
+const ASSET_PUBLISH_INTERVAL_MS = 1200;
 const DEFAULT_METADATA_ITEM_TIMEOUT_MS = 15_000;
 
 export async function runScanWorker({
@@ -74,7 +74,7 @@ export async function runScanWorker({
     total: number,
     currentPath: string | null,
     heartbeat: boolean,
-    partialCount = enrichedItems.filter(Boolean).length,
+    partialCount = 0,
     workerStatus = heartbeat ? 'heartbeat' : 'active',
     diagnostic?: string,
     fallbackSource?: string
@@ -102,7 +102,7 @@ export async function runScanWorker({
           true,
           startedAt,
           lastProgressAt,
-          enrichedItems.filter(Boolean).length,
+          latestProgress.partialCount ?? 0,
           'heartbeat',
           'worker heartbeat active',
           latestProgress.fallbackSource
@@ -246,7 +246,7 @@ function normalizeMetadataCacheKeys(value: RunScanWorkerArgs['metadataCacheKeys'
 }
 
 function metadataCacheKey(item: GalleryAssetItem): string {
-  return `${normalizePath(item.absPath)}|${item.mtime}|${item.mediaType}`;
+  return `${normalizePath(item.absPath)}|${item.mtime}|${item.md5 || ''}|${item.mediaType}`;
 }
 
 function withMetadataTimeout(

@@ -1,5 +1,5 @@
 ﻿(() => {
-  const BATCH_SIZE = 160;
+  const BATCH_SIZE = 96;
   const SCROLL_THRESHOLD = 720;
   const MAX_ACTIVE_ANIMATIONS = 8;
   const DEFAULT_TILE_SIZE = 144;
@@ -177,6 +177,7 @@
   }
 
   function fileNameOf(item) {
+    if (item.__fileName) return item.__fileName;
     const value = item.fileName || item.relPath || item.absPath || '';
     const slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
     return slash >= 0 ? value.substring(slash + 1) : value;
@@ -290,6 +291,18 @@
     ));
   }
 
+  function prepareAsset(raw) {
+    const item = { ...raw };
+    const fileName = fileNameOf(item);
+    item.__fileName = fileName;
+    item.__searchText = normalizeText(`${fileName} ${item.relPath || ''} ${item.md5 || ''}`);
+    item.__projectKey = projectKey(item);
+    item.__moduleKey = moduleKey(item);
+    item.__groupPath = normalizedGroupPath(item.groupPath);
+    item.__mediaType = item.mediaType || 'image';
+    return item;
+  }
+
   function itemsForSelectedPlatform() {
     return state.platform === 'all' ? state.all : state.all.filter((item) => item.platform === state.platform);
   }
@@ -306,11 +319,11 @@
   }
 
   function projectKey(item) {
-    return item.projectPath || item.projectName || '';
+    return item.__projectKey || item.projectPath || item.projectName || '';
   }
 
   function moduleKey(item) {
-    return item.modulePath || item.moduleName || '';
+    return item.__moduleKey || item.modulePath || item.moduleName || '';
   }
 
   function uniqueSorted(items, selector) {
@@ -481,17 +494,16 @@
 
   function filteredItems() {
     const query = state.query.trim().toLowerCase();
-    return sortedItems(state.all.filter((item) => {
-      const searchText = normalizeText(`${fileNameOf(item)} ${item.relPath || ''} ${item.md5 || ''}`);
-      const matchesQuery = !query || searchText.includes(query);
+    return state.all.filter((item) => {
+      const matchesQuery = !query || item.__searchText.includes(query);
       const matchesPlatform = state.platform === 'all' || item.platform === state.platform;
       const matchesProject = state.platform === 'all' || state.projectName === 'all' || projectKey(item) === state.projectName;
       const moduleHidden = elements.module.classList.contains('hidden');
       const matchesModule = state.platform === 'all' || moduleHidden || state.moduleName === 'all' || moduleKey(item) === state.moduleName;
-      const matchesMediaType = state.mediaType === 'all' || (item.mediaType || 'image') === state.mediaType;
+      const matchesMediaType = state.mediaType === 'all' || item.__mediaType === state.mediaType;
       const matchesFormat = state.format === 'all' || item.formatFamily === state.format;
       return matchesQuery && matchesPlatform && matchesProject && matchesModule && matchesMediaType && matchesFormat;
-    }));
+    });
   }
 
   function updateStatus() {
@@ -549,16 +561,21 @@
 
     const end = Math.min(state.filtered.length, state.rendered + BATCH_SIZE);
     const batch = state.filtered.slice(state.rendered, end);
-    const fragmentOperations = [];
+    const fragmentsByGrid = new Map();
 
     for (const item of batch) {
       const dirNode = ensureDirectoryNode(item);
-      fragmentOperations.push(() => dirNode.grid.appendChild(renderCard(item)));
+      let fragment = fragmentsByGrid.get(dirNode.grid);
+      if (!fragment) {
+        fragment = document.createDocumentFragment();
+        fragmentsByGrid.set(dirNode.grid, fragment);
+      }
+      fragment.appendChild(renderCard(item));
     }
 
     requestAnimationFrame(() => {
-      for (const operation of fragmentOperations) {
-        operation();
+      for (const [grid, fragment] of fragmentsByGrid) {
+        grid.appendChild(fragment);
       }
       state.rendered = end;
       updateStatus();
@@ -1565,7 +1582,7 @@
     }
 
     if (msg?.type === 'assets') {
-      state.all = Array.isArray(msg.items) ? msg.items : [];
+      state.all = sortedItems(Array.isArray(msg.items) ? msg.items.map(prepareAsset) : []);
       for (const item of state.all) {
         if (item.mediaInfo || item.imageInfo) {
           state.infoByPath.set(item.absPath, item.mediaInfo || item.imageInfo);

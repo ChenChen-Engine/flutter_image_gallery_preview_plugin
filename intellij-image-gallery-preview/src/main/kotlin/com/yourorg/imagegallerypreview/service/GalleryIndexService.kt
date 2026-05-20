@@ -194,6 +194,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
                 }
                 val discoveredItems = scanner.scan()
                 val items = enrichItems(discoveredItems, forceReindex, started)
+                MediaMetadataExtractor.persistCache()
                 cache = items
                 duplicateIndex = buildDuplicateIndex(items)
 

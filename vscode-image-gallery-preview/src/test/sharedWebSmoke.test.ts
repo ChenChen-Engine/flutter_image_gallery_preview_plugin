@@ -70,6 +70,17 @@ suite('shared web smoke', () => {
     assert.match(script, /if \(!selectOptionsEqual\(select, allLabel, descriptors\)\)/);
   });
 
+  test('shared gallery precomputes search fields and appends card batches by fragment', () => {
+    const script = fs.readFileSync(sharedPath('gallery.js'), 'utf8');
+    const css = fs.readFileSync(sharedPath('gallery.css'), 'utf8');
+
+    assert.match(script, /function prepareAsset/);
+    assert.match(script, /__searchText/);
+    assert.match(script, /document\.createDocumentFragment/);
+    assert.match(css, /content-visibility:\s*auto/);
+    assert.match(css, /contain:\s*layout paint/);
+  });
+
   test('shared media preview keeps external playback without stale web player code', () => {
     const script = fs.readFileSync(sharedPath('gallery.js'), 'utf8');
 
