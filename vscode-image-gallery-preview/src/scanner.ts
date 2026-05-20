@@ -21,9 +21,32 @@ const VIDEO_FORMATS = new Set<AssetKind>([
   'mpeg', 'mpg', 'ts', 'm2ts', 'wmv', 'flv'
 ]);
 const DIRECT_FORMATS = new Set<AssetKind>([...IMAGE_FORMATS, ...AUDIO_FORMATS, ...VIDEO_FORMATS]);
+const MAX_FILE_CACHE_ENTRIES = 50_000;
+const md5Cache = new Map<string, string>();
+const imageSizeCache = new Map<string, { width: number; height: number } | null>();
+const animatedCache = new Map<string, boolean>();
 
 function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, '/');
+}
+
+function fileCacheKey(filePath: string, variant: string, stat?: fs.Stats): string | null {
+  try {
+    const currentStat = stat ?? fs.statSync(filePath);
+    return `${normalizePath(path.resolve(filePath))}|${currentStat.mtimeMs}|${currentStat.size}|${variant}`;
+  } catch {
+    return null;
+  }
+}
+
+function cachedValue<T>(cache: Map<string, T>, key: string | null, loader: () => T): T {
+  if (!key) return loader();
+  const cached = cache.get(key);
+  if (cached !== undefined || cache.has(key)) return cached as T;
+  if (cache.size > MAX_FILE_CACHE_ENTRIES) cache.clear();
+  const value = loader();
+  cache.set(key, value);
+  return value;
 }
 
 function extLower(filePath: string): string {
@@ -438,45 +461,51 @@ function readLottieSize(filePath: string): { width: number; height: number } | n
   }
 }
 
-function readImageSize(filePath: string, formatFamily: AssetKind): { width: number; height: number } | null {
+function readImageSize(filePath: string, formatFamily: AssetKind, stat?: fs.Stats): { width: number; height: number } | null {
   if (mediaTypeFor(formatFamily) !== 'image') return null;
-  switch (formatFamily) {
-    case 'png':
-      return readPngSize(filePath);
-    case 'jpg':
-    case 'jpeg':
-      return readJpegSize(filePath);
-    case 'webp':
-      return readWebpSize(filePath);
-    case 'svg':
-      return readSvgSize(filePath);
-    case 'vector_xml':
-      return readVectorSize(filePath);
-    case 'lottie':
-      return readLottieSize(filePath);
-    default:
-      return null;
-  }
+  return cachedValue(imageSizeCache, fileCacheKey(filePath, `size:${formatFamily}`, stat), () => {
+    switch (formatFamily) {
+      case 'png':
+        return readPngSize(filePath);
+      case 'jpg':
+      case 'jpeg':
+        return readJpegSize(filePath);
+      case 'webp':
+        return readWebpSize(filePath);
+      case 'svg':
+        return readSvgSize(filePath);
+      case 'vector_xml':
+        return readVectorSize(filePath);
+      case 'lottie':
+        return readLottieSize(filePath);
+      default:
+        return null;
+    }
+  });
 }
 
-function isAnimated(filePath: string, formatFamily: AssetKind): boolean {
+function isAnimated(filePath: string, formatFamily: AssetKind, stat?: fs.Stats): boolean {
   if (formatFamily === 'gif' || formatFamily === 'apng' || formatFamily === 'lottie') return true;
   if (formatFamily !== 'webp') return false;
 
-  try {
-    return fs.readFileSync(filePath).includes(Buffer.from('ANMF', 'ascii'));
-  } catch {
-    return false;
-  }
+  return cachedValue(animatedCache, fileCacheKey(filePath, `animated:${formatFamily}`, stat), () => {
+    try {
+      return fs.readFileSync(filePath).includes(Buffer.from('ANMF', 'ascii'));
+    } catch {
+      return false;
+    }
+  });
 }
 
-function md5Hex(filePath: string): string {
-  try {
-    const content = fs.readFileSync(filePath);
-    return crypto.createHash('md5').update(content).digest('hex');
-  } catch {
-    return '';
-  }
+function md5Hex(filePath: string, stat?: fs.Stats): string {
+  return cachedValue(md5Cache, fileCacheKey(filePath, 'md5', stat), () => {
+    try {
+      const content = fs.readFileSync(filePath);
+      return crypto.createHash('md5').update(content).digest('hex');
+    } catch {
+      return '';
+    }
+  });
 }
 
 function androidCopyToken(folderName: string, filePath: string): string {
@@ -537,7 +566,7 @@ function toGalleryItem(params: {
   workspaceKind: GalleryAssetItem['workspaceKind'];
 }): GalleryAssetItem {
   const stat = fs.statSync(params.filePath);
-  const size = readImageSize(params.filePath, params.formatFamily);
+  const size = readImageSize(params.filePath, params.formatFamily, stat);
   const mediaType = mediaTypeFor(params.formatFamily);
 
   return {
@@ -554,9 +583,9 @@ function toGalleryItem(params: {
     isPrimaryModule: params.isPrimaryModule,
     groupPath: params.groupPath,
     copyToken: params.copyToken,
-    md5: md5Hex(params.filePath),
+    md5: md5Hex(params.filePath, stat),
     formatFamily: params.formatFamily,
-    isAnimated: isAnimated(params.filePath, params.formatFamily),
+    isAnimated: isAnimated(params.filePath, params.formatFamily, stat),
     mediaType,
     durationMillis: null,
     resourceRootPath: normalizePath(params.resourceRootPath).replace(/\/+$/, ''),

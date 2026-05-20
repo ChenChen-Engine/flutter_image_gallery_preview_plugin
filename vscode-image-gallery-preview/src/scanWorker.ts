@@ -44,7 +44,7 @@ interface RunScanWorkerArgs {
 }
 
 const DEFAULT_HEARTBEAT_MS = 1000;
-const DEFAULT_METADATA_PARALLELISM = Math.min(6, Math.max(2, os.cpus()?.length ?? 2));
+const DEFAULT_METADATA_PARALLELISM = Math.min(50, Math.max(10, os.cpus()?.length ?? 10));
 const ASSET_PUBLISH_BATCH_SIZE = 200;
 const ASSET_PUBLISH_INTERVAL_MS = 1200;
 const DEFAULT_METADATA_ITEM_TIMEOUT_MS = 15_000;

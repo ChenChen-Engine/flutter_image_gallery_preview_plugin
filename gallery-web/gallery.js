@@ -91,7 +91,8 @@
     filterTimer: 0,
     scrollTimer: 0,
     toastTimer: 0,
-    loadingSeq: -1
+    loadingSeq: -1,
+    assetStream: null
   };
 
   function loadCollapsedKeys() {
@@ -504,6 +505,34 @@
       const matchesFormat = state.format === 'all' || item.formatFamily === state.format;
       return matchesQuery && matchesPlatform && matchesProject && matchesModule && matchesMediaType && matchesFormat;
     });
+  }
+
+  function applyAssets(items) {
+    state.all = sortedItems(Array.isArray(items) ? items.map(prepareAsset) : []);
+    for (const item of state.all) {
+      if (item.mediaInfo || item.imageInfo) {
+        state.infoByPath.set(item.absPath, item.mediaInfo || item.imageInfo);
+      }
+    }
+    updateFilterOptions();
+    resetRender();
+  }
+
+  function finishAssetStream() {
+    const stream = state.assetStream;
+    if (!stream) return;
+    const items = stream.items;
+    const completeOnEnd = stream.completeOnEnd;
+    const doneMessage = stream.doneMessage || 'Updated';
+    state.assetStream = null;
+    applyAssets(items);
+    if (completeOnEnd) {
+      setLoading(false, doneMessage, { phase: 'complete', indexedCount: items.length, metadataCount: items.length });
+    }
+  }
+
+  function requestAssetChunk(assetSeq, chunkIndex) {
+    setTimeout(() => post('requestAssetsChunk', { assetSeq, chunkIndex }), 0);
   }
 
   function updateStatus() {
@@ -1582,14 +1611,46 @@
     }
 
     if (msg?.type === 'assets') {
-      state.all = sortedItems(Array.isArray(msg.items) ? msg.items.map(prepareAsset) : []);
-      for (const item of state.all) {
-        if (item.mediaInfo || item.imageInfo) {
-          state.infoByPath.set(item.absPath, item.mediaInfo || item.imageInfo);
-        }
+      applyAssets(msg.items);
+      return;
+    }
+
+    if (msg?.type === 'assetsStart' && Number.isFinite(msg.assetSeq)) {
+      state.assetStream = {
+        seq: msg.assetSeq,
+        items: [],
+        total: Number.isFinite(msg.total) ? msg.total : 0,
+        chunkCount: Number.isFinite(msg.chunkCount) ? msg.chunkCount : 0,
+        nextChunkIndex: 0,
+        completeOnEnd: !!msg.completeOnEnd,
+        doneMessage: msg.doneMessage || 'Updated'
+      };
+      if (state.assetStream.chunkCount <= 0) {
+        finishAssetStream();
+      } else {
+        requestAssetChunk(msg.assetSeq, 0);
       }
-      updateFilterOptions();
-      resetRender();
+      return;
+    }
+
+    if (msg?.type === 'assetsChunk' && Number.isFinite(msg.assetSeq)) {
+      if (state.assetStream?.seq !== msg.assetSeq) return;
+      if (Number.isFinite(msg.chunkIndex) && msg.chunkIndex !== state.assetStream.nextChunkIndex) return;
+      if (Array.isArray(msg.items)) {
+        state.assetStream.items.push(...msg.items);
+      }
+      if (msg.done) {
+        finishAssetStream();
+      } else {
+        state.assetStream.nextChunkIndex += 1;
+        requestAssetChunk(msg.assetSeq, state.assetStream.nextChunkIndex);
+      }
+      return;
+    }
+
+    if (msg?.type === 'assetsEnd' && Number.isFinite(msg.assetSeq)) {
+      if (state.assetStream?.seq !== msg.assetSeq) return;
+      finishAssetStream();
       return;
     }
 

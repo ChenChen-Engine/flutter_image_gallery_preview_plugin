@@ -6,7 +6,9 @@ import com.yourorg.imagegallerypreview.util.AssetFileUtil
 import com.yourorg.imagegallerypreview.util.PubspecAssetsParser
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
 
@@ -19,6 +21,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
 
     private val androidProjectCache = ConcurrentHashMap<File, ProjectIdentity>()
     private val flutterProjectCache = ConcurrentHashMap<File, ProjectIdentity?>()
+    private val displayRelativePathCache = ConcurrentHashMap<String, String>()
 
     private data class ProjectIdentity(
         val name: String,
@@ -50,6 +53,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
     }
 
     private fun scanAndroidResources(results: MutableList<GalleryAssetItem>) {
+        val tasks = mutableListOf<() -> GalleryAssetItem?>()
         for (resDir in walkFiltered(root)) {
             if (!resDir.isDirectory || !resDir.name.equals("res", ignoreCase = true)) continue
 
@@ -75,50 +79,65 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
                 val files = bucketDir.listFiles()?.filter { it.isFile } ?: emptyList()
 
                 for (file in files) {
-                    val family = AssetFileUtil.detectFormatFamily(file, preferVectorXml = true)
-                    if (!AssetFileUtil.isSupportedFamily(family)) continue
-                    val mediaType = AssetFileUtil.mediaType(family)
-                    val isRaw = bucketName.startsWith("raw", ignoreCase = true)
-                    if (isRaw && mediaType == "image") continue
-                    if (!isRaw && mediaType != "image") continue
-
-                    val kind = AssetFileUtil.assetKind(family)
-                    val size = AssetFileUtil.readImageSize(file, family)
-                    val moduleRelPath = AssetFileUtil.relativePath(moduleRoot, file, root)
-                    val groupPath = moduleRelPath.substringBeforeLast('/', ".")
-
-                    results += GalleryAssetItem(
-                        sourceType = SourceType.ANDROID_RES,
-                        platform = SourceType.ANDROID_RES.platform,
-                        workspaceKind = workspaceKind,
-                        projectName = projectIdentity.name,
-                        projectPath = projectIdentity.path,
-                        projectRelPath = displayRelativePath(File(projectIdentity.path)),
-                        isPrimaryProject = projectIdentity.isPrimary,
-                        moduleName = moduleName,
-                        modulePath = AssetFileUtil.normalizePath(moduleRoot.absolutePath),
-                        moduleRelPath = displayRelativePath(moduleRoot),
-                        isPrimaryModule = isPrimaryModule(moduleName),
-                        groupPath = groupPath,
-                        copyToken = AssetFileUtil.androidCopyToken(bucketName, file),
-                        md5 = AssetFileUtil.md5Hex(file),
-                        formatFamily = family,
-                        isAnimated = AssetFileUtil.isAnimated(file, family),
-                        mediaType = mediaType,
-                        durationMillis = null,
-                        resourceRootPath = AssetFileUtil.normalizePath(bucketDir.absolutePath),
-                        absPath = file.absolutePath,
-                        relPath = AssetFileUtil.relativePath(root, file),
-                        format = file.extension.lowercase(Locale.ROOT),
-                        width = size?.first,
-                        height = size?.second,
-                        qualifier = qualifier,
-                        mtime = file.lastModified(),
-                        kind = kind
-                    )
+                    tasks += {
+                        buildAndroidItem(file, bucketName, qualifier, bucketDir, moduleRoot, moduleName, projectIdentity)
+                    }
                 }
             }
         }
+        results += buildItemsInParallel(tasks)
+    }
+
+    private fun buildAndroidItem(
+        file: File,
+        bucketName: String,
+        qualifier: String,
+        bucketDir: File,
+        moduleRoot: File,
+        moduleName: String,
+        projectIdentity: ProjectIdentity
+    ): GalleryAssetItem? {
+        val family = AssetFileUtil.detectFormatFamily(file, preferVectorXml = true)
+        if (!AssetFileUtil.isSupportedFamily(family)) return null
+        val mediaType = AssetFileUtil.mediaType(family)
+        val isRaw = bucketName.startsWith("raw", ignoreCase = true)
+        if (isRaw && mediaType == "image") return null
+        if (!isRaw && mediaType != "image") return null
+
+        val kind = AssetFileUtil.assetKind(family)
+        val size = AssetFileUtil.readImageSize(file, family)
+        val moduleRelPath = AssetFileUtil.relativePath(moduleRoot, file, root)
+        val groupPath = moduleRelPath.substringBeforeLast('/', ".")
+
+        return GalleryAssetItem(
+            sourceType = SourceType.ANDROID_RES,
+            platform = SourceType.ANDROID_RES.platform,
+            workspaceKind = workspaceKind,
+            projectName = projectIdentity.name,
+            projectPath = projectIdentity.path,
+            projectRelPath = displayRelativePath(File(projectIdentity.path)),
+            isPrimaryProject = projectIdentity.isPrimary,
+            moduleName = moduleName,
+            modulePath = AssetFileUtil.normalizePath(moduleRoot.absolutePath),
+            moduleRelPath = displayRelativePath(moduleRoot),
+            isPrimaryModule = isPrimaryModule(moduleName),
+            groupPath = groupPath,
+            copyToken = AssetFileUtil.androidCopyToken(bucketName, file),
+            md5 = AssetFileUtil.md5Hex(file),
+            formatFamily = family,
+            isAnimated = AssetFileUtil.isAnimated(file, family),
+            mediaType = mediaType,
+            durationMillis = null,
+            resourceRootPath = AssetFileUtil.normalizePath(bucketDir.absolutePath),
+            absPath = file.absolutePath,
+            relPath = AssetFileUtil.relativePath(root, file),
+            format = file.extension.lowercase(Locale.ROOT),
+            width = size?.first,
+            height = size?.second,
+            qualifier = qualifier,
+            mtime = file.lastModified(),
+            kind = kind
+        )
     }
 
     private fun scanFlutterAssets(results: MutableList<GalleryAssetItem>) {
@@ -137,10 +156,12 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             val entries = PubspecAssetsParser.parseAssetEntries(pubspec)
             val seenProjectFiles = linkedSetOf<String>()
 
+            val tasks = mutableListOf<() -> GalleryAssetItem?>()
+
             fun addCandidate(file: File, resourceRoot: File) {
                 val normalized = AssetFileUtil.normalizePath(file.absolutePath)
                 if (seenProjectFiles.add(normalized)) {
-                    addFlutterFile(file, moduleRoot, projectIdentity, moduleName, resourceRoot, results)
+                    tasks += { buildFlutterItem(file, moduleRoot, projectIdentity, moduleName, resourceRoot) }
                 }
             }
 
@@ -174,19 +195,20 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
                     addCandidate(file, fallbackDir)
                 }
             }
+
+            results += buildItemsInParallel(tasks)
         }
     }
 
-    private fun addFlutterFile(
+    private fun buildFlutterItem(
         file: File,
         moduleRoot: File,
         projectIdentity: ProjectIdentity,
         moduleName: String,
-        resourceRoot: File,
-        results: MutableList<GalleryAssetItem>
-    ) {
+        resourceRoot: File
+    ): GalleryAssetItem? {
         val family = AssetFileUtil.detectFormatFamily(file, preferVectorXml = false)
-        if (!AssetFileUtil.isSupportedFamily(family)) return
+        if (!AssetFileUtil.isSupportedFamily(family)) return null
 
         val kind = AssetFileUtil.assetKind(family)
         val mediaType = AssetFileUtil.mediaType(family)
@@ -194,7 +216,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
         val moduleRelPath = AssetFileUtil.relativePath(moduleRoot, file, root)
         val groupPath = moduleRelPath.substringBeforeLast('/', ".")
 
-        results += GalleryAssetItem(
+        return GalleryAssetItem(
             sourceType = SourceType.FLUTTER_ASSET,
             platform = SourceType.FLUTTER_ASSET.platform,
             workspaceKind = workspaceKind,
@@ -227,15 +249,17 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
 
     private fun scanIosAssets(results: MutableList<GalleryAssetItem>) {
         val seenPaths = mutableSetOf<String>()
+        val tasks = mutableListOf<() -> GalleryAssetItem?>()
         for (iosRoot in findIosRoots()) {
-            scanIosXcassets(iosRoot, results, seenPaths)
-            scanIosImageFiles(iosRoot, results, seenPaths)
+            scanIosXcassets(iosRoot, tasks, seenPaths)
+            scanIosImageFiles(iosRoot, tasks, seenPaths)
         }
+        results += buildItemsInParallel(tasks)
     }
 
     private fun scanIosXcassets(
         iosRoot: File,
-        results: MutableList<GalleryAssetItem>,
+        tasks: MutableList<() -> GalleryAssetItem?>,
         seenPaths: MutableSet<String>
     ) {
         for (imageSetDir in walkFiltered(iosRoot)) {
@@ -258,14 +282,14 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
                 val normalized = AssetFileUtil.normalizePath(candidate.absolutePath)
                 if (!seenPaths.add(normalized)) continue
 
-                addIosFile(candidate, moduleRoot, projectIdentity, moduleName, imageSetDir, results)
+                tasks += { buildIosItem(candidate, moduleRoot, projectIdentity, moduleName, imageSetDir) }
             }
         }
     }
 
     private fun scanIosImageFiles(
         iosRoot: File,
-        results: MutableList<GalleryAssetItem>,
+        tasks: MutableList<() -> GalleryAssetItem?>,
         seenPaths: MutableSet<String>
     ) {
         for (file in walkFiltered(iosRoot)) {
@@ -283,21 +307,20 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
             val moduleRoot = findIosModuleRoot(file, iosRoot)
             val moduleName = resolveIosModuleName(moduleRoot)
             val projectIdentity = resolveIosProject(moduleRoot)
-            addIosFile(file, moduleRoot, projectIdentity, moduleName, file.parentFile ?: moduleRoot, results, family)
+            tasks += { buildIosItem(file, moduleRoot, projectIdentity, moduleName, file.parentFile ?: moduleRoot, family) }
         }
     }
 
-    private fun addIosFile(
+    private fun buildIosItem(
         file: File,
         moduleRoot: File,
         projectIdentity: ProjectIdentity,
         moduleName: String,
         resourceRoot: File,
-        results: MutableList<GalleryAssetItem>,
         preDetectedFamily: String? = null
-    ) {
+    ): GalleryAssetItem? {
         val family = preDetectedFamily ?: AssetFileUtil.detectFormatFamily(file, preferVectorXml = false)
-        if (!AssetFileUtil.isSupportedFamily(family)) return
+        if (!AssetFileUtil.isSupportedFamily(family)) return null
 
         val kind = AssetFileUtil.assetKind(family)
         val mediaType = AssetFileUtil.mediaType(family)
@@ -305,7 +328,7 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
         val moduleRelPath = AssetFileUtil.relativePath(moduleRoot, file, root)
         val groupPath = moduleRelPath.substringBeforeLast('/', ".")
 
-        results += GalleryAssetItem(
+        return GalleryAssetItem(
             sourceType = SourceType.IOS_ASSET,
             platform = SourceType.IOS_ASSET.platform,
             workspaceKind = workspaceKind,
@@ -537,6 +560,24 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
         return roots.toList()
     }
 
+    private fun buildItemsInParallel(tasks: List<() -> GalleryAssetItem?>): List<GalleryAssetItem> {
+        if (tasks.isEmpty()) return emptyList()
+        if (tasks.size < DISCOVERY_PARALLEL_THRESHOLD || DISCOVERY_PARALLELISM <= 1) {
+            return tasks.mapNotNull { task -> runCatching { task() }.getOrNull() }
+        }
+
+        val executor = Executors.newFixedThreadPool(minOf(DISCOVERY_PARALLELISM, tasks.size))
+        return try {
+            executor.invokeAll(tasks.map { task ->
+                Callable { runCatching { task() }.getOrNull() }
+            }).mapNotNull { future ->
+                runCatching { future.get() }.getOrNull()
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
     private fun walkFiltered(start: File): Sequence<File> {
         return start.walkTopDown().onEnter { dir -> !shouldSkipDirectory(dir) }
     }
@@ -605,16 +646,24 @@ class FileSystemAssetScanner(openedRoot: File) : AssetScanner {
     }
 
     private fun displayRelativePath(target: File): String {
-        return try {
-            val relative = AssetFileUtil.normalizePath(root.canonicalFile.toPath().relativize(target.canonicalFile.toPath()).toString())
-            when {
-                relative.isBlank() -> "."
-                relative.startsWith("..") -> relative
-                else -> "./$relative"
+        val key = AssetFileUtil.normalizePath(target.absoluteFile.path)
+        return displayRelativePathCache.computeIfAbsent(key) {
+            try {
+                val relative = AssetFileUtil.normalizePath(root.canonicalFile.toPath().relativize(target.canonicalFile.toPath()).toString())
+                when {
+                    relative.isBlank() -> "."
+                    relative.startsWith("..") -> relative
+                    else -> "./$relative"
+                }
+            } catch (_: Throwable) {
+                AssetFileUtil.normalizePath(target.absolutePath)
             }
-        } catch (_: Throwable) {
-            AssetFileUtil.normalizePath(target.absolutePath)
         }
+    }
+
+    companion object {
+        private const val DISCOVERY_PARALLEL_THRESHOLD = 64
+        private val DISCOVERY_PARALLELISM = minOf(50, maxOf(10, Runtime.getRuntime().availableProcessors()))
     }
 }
 

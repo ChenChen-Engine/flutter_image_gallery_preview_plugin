@@ -7,9 +7,25 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import javax.imageio.ImageIO
 
 object AssetFileUtil {
+    private const val MAX_FILE_CACHE_ENTRIES = 50_000
+
+    private data class FileCacheKey(
+        val path: String,
+        val mtime: Long,
+        val length: Long,
+        val variant: String
+    )
+
+    private val md5Cache = ConcurrentHashMap<FileCacheKey, String>()
+    private val imageSizeCache = ConcurrentHashMap<FileCacheKey, Pair<Int, Int>?>()
+    private val animatedCache = ConcurrentHashMap<FileCacheKey, Boolean>()
+    private val lottieCache = ConcurrentHashMap<FileCacheKey, Boolean>()
+    private val vectorCache = ConcurrentHashMap<FileCacheKey, Boolean>()
+
     private val imageFamilies = setOf("png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "pdf",
         "heic", "heif", "apng", "avif", "ico"
     )
@@ -55,29 +71,39 @@ object AssetFileUtil {
     fun isAnimated(file: File, formatFamily: String): Boolean {
         return when (formatFamily) {
             "gif", "apng", "lottie" -> true
-            "webp" -> isAnimatedWebp(file)
+            "webp" -> cached(animatedCache, cacheKey(file, "animated:$formatFamily"), false) { isAnimatedWebp(file) }
             else -> false
         }
     }
 
     fun readImageSize(file: File, formatFamily: String): Pair<Int, Int>? {
         if (mediaType(formatFamily) != "image") return null
-        return when (formatFamily) {
-            "svg" -> readSvgSize(file)
-            "vector_xml" -> readVectorDrawableSize(file)
-            "lottie" -> readLottieSize(file)
-            else -> readBinaryImageSize(file)
+        return cached(imageSizeCache, cacheKey(file, "size:$formatFamily"), null) {
+            when (formatFamily) {
+                "svg" -> readSvgSize(file)
+                "vector_xml" -> readVectorDrawableSize(file)
+                "lottie" -> readLottieSize(file)
+                else -> readBinaryImageSize(file)
+            }
         }
     }
 
     fun md5Hex(file: File): String {
-        return try {
-            val bytes = Files.readAllBytes(file.toPath())
-            MessageDigest.getInstance("MD5")
-                .digest(bytes)
-                .joinToString(separator = "") { "%02x".format(it) }
-        } catch (_: Throwable) {
-            ""
+        return cached(md5Cache, cacheKey(file, "md5"), "") {
+            try {
+                val digest = MessageDigest.getInstance("MD5")
+                Files.newInputStream(file.toPath()).use { input ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        if (read > 0) digest.update(buffer, 0, read)
+                    }
+                }
+                digest.digest().joinToString(separator = "") { "%02x".format(it) }
+            } catch (_: Throwable) {
+                ""
+            }
         }
     }
 
@@ -236,21 +262,25 @@ object AssetFileUtil {
     fun readUtf8(file: File): String = Files.readString(file.toPath(), StandardCharsets.UTF_8)
 
     private fun looksLikeVectorDrawable(file: File): Boolean {
-        return try {
-            val content = readUtf8(file)
-            content.contains("<vector") && content.contains("http://schemas.android.com/apk/res/android")
-        } catch (_: Throwable) {
-            false
+        return cached(vectorCache, cacheKey(file, "vector"), false) {
+            try {
+                val content = readUtf8(file)
+                content.contains("<vector") && content.contains("http://schemas.android.com/apk/res/android")
+            } catch (_: Throwable) {
+                false
+            }
         }
     }
 
     fun looksLikeLottie(file: File): Boolean {
-        return try {
-            if (fileExtension(file) != "json") return false
-            val text = readUtf8(file)
-            text.contains("\"layers\"") && text.contains("\"v\"") && text.contains("\"w\"") && text.contains("\"h\"")
-        } catch (_: Throwable) {
-            false
+        return cached(lottieCache, cacheKey(file, "lottie"), false) {
+            try {
+                if (fileExtension(file) != "json") return@cached false
+                val text = readUtf8(file)
+                text.contains("\"layers\"") && text.contains("\"v\"") && text.contains("\"w\"") && text.contains("\"h\"")
+            } catch (_: Throwable) {
+                false
+            }
         }
     }
 
@@ -262,6 +292,30 @@ object AssetFileUtil {
         } catch (_: Throwable) {
             false
         }
+    }
+
+    private fun cacheKey(file: File, variant: String): FileCacheKey? {
+        return try {
+            FileCacheKey(
+                path = normalizePath(file.absoluteFile.path),
+                mtime = file.lastModified(),
+                length = file.length(),
+                variant = variant
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun <T> cached(
+        cache: ConcurrentHashMap<FileCacheKey, T>,
+        key: FileCacheKey?,
+        fallback: T,
+        loader: () -> T
+    ): T {
+        if (key == null) return loader()
+        if (cache.size > MAX_FILE_CACHE_ENTRIES) cache.clear()
+        return cache.computeIfAbsent(key) { loader() } ?: fallback
     }
 }
 

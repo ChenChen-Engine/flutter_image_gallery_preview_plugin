@@ -39,6 +39,8 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import javax.swing.JPanel
 import javax.swing.SwingConstants
 
@@ -55,9 +57,29 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     private val mediaServer: LocalMediaStreamServer?
     private val videoThumbnailProvider: VideoThumbnailProvider?
     private val latestItems = mutableListOf<GalleryAssetItem>()
+    private val loadingSeq = AtomicLong(0)
+    private val assetSeq = AtomicLong(0)
+    private val assetSendLock = Any()
+    private val assetSessions = ConcurrentHashMap<Long, AssetSendSession>()
+
+    private data class AssetSendRequest(
+        val items: List<GalleryAssetItem>,
+        val hideLoadingPayload: Map<String, Any?>?
+    )
+
+    private data class AssetSendSession(
+        val chunks: List<List<GalleryWebAssetItem>>,
+        val completeOnEnd: Boolean,
+        val doneMessage: String
+    )
 
     @Volatile
     private var browserReady = false
+
+    @Volatile
+    private var assetSendRunning = false
+
+    private var pendingAssetSend: AssetSendRequest? = null
 
     private val itemsListener: (List<GalleryAssetItem>) -> Unit = { items ->
         latestItems.clear()
@@ -123,6 +145,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     override fun dispose() {
         service.removeListener(itemsListener)
         service.removeStatusListener(statusListener)
+        assetSessions.clear()
     }
 
     private fun handleWebMessage(rawMessage: String): JBCefJSQuery.Response? {
@@ -177,6 +200,11 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             "requestImageInfo", "requestMediaInfo" -> message.string("absPath")?.let { absPath ->
                 sendMediaInfo(absPath, message.get("force")?.asBoolean == true)
             }
+            "requestAssetsChunk" -> {
+                val seq = message.get("assetSeq")?.asLong ?: return null
+                val chunkIndex = message.get("chunkIndex")?.asInt ?: 0
+                sendAssetChunk(seq, chunkIndex)
+            }
             "openWithDefaultApp" -> message.string("absPath")?.let { absPath ->
                 ApplicationManager.getApplication().executeOnPooledThread { openWithDefaultApp(absPath) }
             }
@@ -191,20 +219,90 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     private fun sendAssetsIfReady(hideLoadingAfterSend: Boolean = false) {
         if (!browserReady) return
 
-        val snapshot = latestItems.toList()
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val assets = snapshot.map { item ->
-                val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
-                val file = File(normalizedPath)
-                val previewSrc = previewSrcFor(item, file)
-                val lottieJson = if (item.formatFamily == "lottie") readSmallTextFile(normalizedPath) else null
-                GalleryWebPayloadBuilder.toWebAsset(item, previewSrc, lottieJson)
+        val request = AssetSendRequest(
+            items = latestItems.toList(),
+            hideLoadingPayload = if (hideLoadingAfterSend) loadingPayload(service.currentStatus(), loading = false) else null
+        )
+        var shouldStartWorker = false
+        synchronized(assetSendLock) {
+            val previous = pendingAssetSend
+            pendingAssetSend = request.copy(
+                hideLoadingPayload = request.hideLoadingPayload ?: previous?.hideLoadingPayload
+            )
+            if (!assetSendRunning) {
+                assetSendRunning = true
+                shouldStartWorker = true
             }
+        }
 
-            sendToWeb(mapOf("type" to "assets", "items" to assets))
-            if (hideLoadingAfterSend) {
-                sendToWeb(loadingPayload(service.currentStatus(), loading = false))
+        if (shouldStartWorker) {
+            ApplicationManager.getApplication().executeOnPooledThread {
+                drainAssetSendQueue()
             }
+        }
+    }
+
+    private fun drainAssetSendQueue() {
+        while (true) {
+            val request = synchronized(assetSendLock) {
+                val next = pendingAssetSend
+                if (next == null) {
+                    assetSendRunning = false
+                }
+                pendingAssetSend = null
+                next
+            } ?: return
+
+            sendAssetSnapshot(request)
+        }
+    }
+
+    private fun sendAssetSnapshot(request: AssetSendRequest) {
+        val snapshot = request.items
+        val assets = snapshot.map { item ->
+            val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
+            val file = File(normalizedPath)
+            val previewSrc = previewSrcFor(item, file)
+            val lottieJson = if (item.formatFamily == "lottie") readSmallTextFile(normalizedPath) else null
+            GalleryWebPayloadBuilder.toWebAsset(item, previewSrc, lottieJson)
+        }
+
+        val seq = assetSeq.incrementAndGet()
+        val chunks = assets.chunked(ASSET_PAYLOAD_CHUNK_SIZE)
+        val doneMessage = request.hideLoadingPayload?.get("message") as? String ?: "Updated"
+        assetSessions[seq] = AssetSendSession(
+            chunks = chunks,
+            completeOnEnd = request.hideLoadingPayload != null,
+            doneMessage = doneMessage
+        )
+        sendToWeb(
+            mapOf(
+                "type" to "assetsStart",
+                "assetSeq" to seq,
+                "total" to assets.size,
+                "chunkCount" to chunks.size,
+                "completeOnEnd" to (request.hideLoadingPayload != null),
+                "doneMessage" to doneMessage
+            )
+        )
+    }
+
+    private fun sendAssetChunk(seq: Long, chunkIndex: Int) {
+        val session = assetSessions[seq] ?: return
+        val chunk = session.chunks.getOrNull(chunkIndex) ?: return
+        val done = chunkIndex >= session.chunks.lastIndex
+        sendToWeb(
+            mapOf(
+                "type" to "assetsChunk",
+                "assetSeq" to seq,
+                "chunkIndex" to chunkIndex,
+                "items" to chunk,
+                "done" to done,
+                "total" to session.chunks.sumOf { it.size }
+            )
+        )
+        if (done) {
+            assetSessions.remove(seq)
         }
     }
 
@@ -233,6 +331,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             mapOf(
                 "type" to "loadingState",
                 "loading" to true,
+                "loadingSeq" to loadingSeq.incrementAndGet(),
                 "message" to "Rendering assets...",
                 "phase" to "rendering",
                 "indexedCount" to latestItems.size,
@@ -246,6 +345,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         return mapOf(
             "type" to "loadingState",
             "loading" to loading,
+            "loadingSeq" to loadingSeq.incrementAndGet(),
             "message" to status.message,
             "phase" to status.phase,
             "indexedCount" to status.indexedCount,
@@ -292,12 +392,26 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
     }
 
     private fun sendToWeb(payload: Any) {
-        val json = gson.toJson(payload)
+        sendToWeb(listOf(payload))
+    }
+
+    private fun sendToWeb(payloads: List<Any>) {
+        if (payloads.isEmpty()) return
+        val script = payloads.joinToString(separator = "\n") { payload ->
+            val json = gson.toJson(payload)
+            """
+                try {
+                  window.galleryHostReceive && window.galleryHostReceive($json);
+                } catch (error) {
+                  console.error('[image-gallery-preview] host message failed', error);
+                }
+            """.trimIndent()
+        }
         val targetBrowser = browser ?: return
         ApplicationManager.getApplication().invokeLater {
             if (!isDisplayable) return@invokeLater
             targetBrowser.cefBrowser.executeJavaScript(
-                "window.galleryHostReceive && window.galleryHostReceive($json);",
+                script,
                 targetBrowser.cefBrowser.url,
                 0
             )
@@ -435,5 +549,6 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
 
     companion object {
         private const val MAX_INLINE_LOTTIE_BYTES = 2L * 1024L * 1024L
+        private const val ASSET_PAYLOAD_CHUNK_SIZE = 50
     }
 }

@@ -2,8 +2,9 @@
   "name": "vscode-image-gallery-preview",
   "displayName": "Image Gallery Preview",
   "description": "在 VSCode 侧边栏中预览 Android、Flutter、iOS 资源，支持分组筛选、信息查看和重复资源检测。",
-  "version": "1.2.2",
-  "publisher": "yourorg",
+  "version": "1.2.3",
+  "publisher": "ChenChen",
+  "author": "uǝɥƆuǝɥƆ",
   "engines": {
     "vscode": "^1.95.0"
   },

@@ -732,7 +732,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
     }
 
     companion object {
-        private val MAX_METADATA_PARALLELISM = minOf(6, maxOf(2, Runtime.getRuntime().availableProcessors()))
+        private val MAX_METADATA_PARALLELISM = minOf(50, maxOf(10, Runtime.getRuntime().availableProcessors()))
         private const val METADATA_ITEM_TIMEOUT_MS = 15_000L
         private const val MAX_FAST_DUPLICATE_SCAN_FILES = 64
 
