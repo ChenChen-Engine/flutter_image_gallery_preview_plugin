@@ -82,10 +82,11 @@ This document records what has been implemented, how the implementation evolved,
 ### Indexing and duplicate detection
 
 - Startup background indexing is enabled in both plugins.
+- Duplicate resource detection is exposed in Settings and defaults to off.
 - Duplicate detection is keyed by:
   - `platform + md5`
 - Duplicate detection covers every scanned resource format, not only images.
-- Duplicate prompts are intentionally limited to later manually added files inside legal resource roots.
+- When enabled, duplicate prompts are intentionally limited to later manually added or modified files inside legal resource roots.
 - Build outputs and generated folders are excluded from duplicate prompts.
 
 ## Current architecture
@@ -259,8 +260,8 @@ The implementation evolved in these stages:
    - dynamic filters and collapsible grouping
 4. Metadata and duplicate detection:
    - MD5 indexing
-   - duplicate detection bounded to resource roots
-   - duplicate prompts for manually added resources across all scanned formats
+   - duplicate detection bounded to resource roots and guarded by a default-off Settings toggle
+   - duplicate prompts for manually added or modified resources across all scanned formats when enabled
    - image metadata dialog
 5. Media expansion:
    - audio and video scanning

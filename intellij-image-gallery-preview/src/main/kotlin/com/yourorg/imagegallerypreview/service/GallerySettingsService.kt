@@ -15,7 +15,8 @@ import com.intellij.openapi.project.Project
 )
 class GallerySettingsService : PersistentStateComponent<GallerySettingsService.State> {
     data class State(
-        var resourceStringLinksEnabled: Boolean = false
+        var resourceStringLinksEnabled: Boolean = false,
+        var duplicateResourceDetectionEnabled: Boolean = false
     )
 
     private var state = State()
@@ -24,6 +25,12 @@ class GallerySettingsService : PersistentStateComponent<GallerySettingsService.S
         get() = state.resourceStringLinksEnabled
         set(value) {
             state.resourceStringLinksEnabled = value
+        }
+
+    var duplicateResourceDetectionEnabled: Boolean
+        get() = state.duplicateResourceDetectionEnabled
+        set(value) {
+            state.duplicateResourceDetectionEnabled = value
         }
 
     override fun getState(): State = state

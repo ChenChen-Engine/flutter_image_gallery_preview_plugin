@@ -14,6 +14,8 @@ const SCAN_STALE_MS = 12_000;
 const RESOURCE_STRING_LINKS_SETTING_SECTION = 'imageGalleryPreview';
 const RESOURCE_STRING_LINKS_SETTING_NAME = 'resourceStringLinksEnabled';
 const RESOURCE_STRING_LINKS_SETTING_KEY = `${RESOURCE_STRING_LINKS_SETTING_SECTION}.${RESOURCE_STRING_LINKS_SETTING_NAME}`;
+const IMAGE_GALLERY_SETTINGS_QUERY = '@ext:ChenChen.vscode-image-gallery-preview';
+const DUPLICATE_RESOURCE_DETECTION_SETTING_NAME = 'duplicateResourceDetectionEnabled';
 const METADATA_CACHE_STORAGE_KEY = 'imageGalleryPreview.metadataCache.v2';
 const MAX_PERSISTED_METADATA_ENTRIES = 5_000;
 const IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'pdf', 'heic', 'heif', 'apng', 'avif', 'ico', 'lottie', 'vector_xml']);
@@ -221,7 +223,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   }
 
   async openSettingsCommand(): Promise<void> {
-    this.output.appendLine(`[settings] open requested from command: ${RESOURCE_STRING_LINKS_SETTING_KEY}`);
+    this.output.appendLine(`[settings] open requested from command: ${IMAGE_GALLERY_SETTINGS_QUERY}`);
     await openResourceStringLinkSettings({ output: this.output, notify: false });
   }
 
@@ -247,9 +249,11 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
     if (message?.type === 'updateSettings') {
       const enabled = message.resourceStringLinksEnabled === true;
+      const duplicateDetectionEnabled = message.duplicateResourceDetectionEnabled === true;
       this.resourceReferences.setEnabled(enabled);
-      await vscode.workspace.getConfiguration(RESOURCE_STRING_LINKS_SETTING_SECTION)
-        .update(RESOURCE_STRING_LINKS_SETTING_NAME, enabled, vscode.ConfigurationTarget.Workspace);
+      const configuration = vscode.workspace.getConfiguration(RESOURCE_STRING_LINKS_SETTING_SECTION);
+      await configuration.update(RESOURCE_STRING_LINKS_SETTING_NAME, enabled, vscode.ConfigurationTarget.Workspace);
+      await configuration.update(DUPLICATE_RESOURCE_DETECTION_SETTING_NAME, duplicateDetectionEnabled, vscode.ConfigurationTarget.Workspace);
       vscode.window.setStatusBarMessage(`Resource string links ${enabled ? 'enabled' : 'disabled'}`, 1500);
       return;
     }
@@ -309,7 +313,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async openSettingsFromWebview(): Promise<void> {
-    this.output.appendLine(`[settings] open requested from webview: ${RESOURCE_STRING_LINKS_SETTING_KEY}`);
+    this.output.appendLine(`[settings] open requested from webview: ${IMAGE_GALLERY_SETTINGS_QUERY}`);
     try {
       await openResourceStringLinkSettings({ output: this.output, notify: false });
     } catch (error) {
@@ -473,6 +477,7 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleChangedFileDuplicateCheck(changedPath: string, items: GalleryAssetItem[]): Promise<void> {
+    if (!readDuplicateResourceDetectionEnabled()) return;
     const alert = duplicateAlertForAffectedPath(items, changedPath) ?? duplicateAlertFromIndexedMd5(this.duplicateIndex, changedPath);
     if (!alert) return;
 
@@ -558,15 +563,23 @@ class ImageGalleryViewProvider implements vscode.WebviewViewProvider {
 
       watcher.onDidCreate((uri) => {
         if (isInterestingFsPath(uri.fsPath)) {
-          void this.handleChangedFileDuplicateCheck(uri.fsPath, this.cachedItems);
-          void this.sync((items) => this.handleChangedFileDuplicateCheck(uri.fsPath, items));
+          if (readDuplicateResourceDetectionEnabled()) {
+            void this.handleChangedFileDuplicateCheck(uri.fsPath, this.cachedItems);
+            void this.sync((items) => this.handleChangedFileDuplicateCheck(uri.fsPath, items));
+          } else {
+            void this.sync();
+          }
         }
       });
 
       const onChange = (uri: vscode.Uri) => {
         if (isInterestingFsPath(uri.fsPath)) {
-          void this.handleChangedFileDuplicateCheck(uri.fsPath, this.cachedItems);
-          void this.sync((items) => this.handleChangedFileDuplicateCheck(uri.fsPath, items));
+          if (readDuplicateResourceDetectionEnabled()) {
+            void this.handleChangedFileDuplicateCheck(uri.fsPath, this.cachedItems);
+            void this.sync((items) => this.handleChangedFileDuplicateCheck(uri.fsPath, items));
+          } else {
+            void this.sync();
+          }
         }
       };
       watcher.onDidChange(onChange);
@@ -947,8 +960,8 @@ async function openWithDefaultApp(absPath: string): Promise<void> {
 }
 
 export async function openResourceStringLinkSettings(options: SettingsOpenOptions = {}): Promise<void> {
-  const exactQuery = RESOURCE_STRING_LINKS_SETTING_KEY;
-  const idQuery = `@id:${RESOURCE_STRING_LINKS_SETTING_KEY}`;
+  const exactQuery = IMAGE_GALLERY_SETTINGS_QUERY;
+  const idQuery = RESOURCE_STRING_LINKS_SETTING_KEY;
   const attempts: Array<{ command: string; arg: string }> = [
     { command: 'workbench.action.openWorkspaceSettings', arg: exactQuery },
     { command: 'workbench.action.openWorkspaceSettings', arg: idQuery },
@@ -962,7 +975,7 @@ export async function openResourceStringLinkSettings(options: SettingsOpenOption
       options.output?.appendLine(`[settings] execute ${attempt.command} ${attempt.arg}`);
       await vscode.commands.executeCommand(attempt.command, attempt.arg);
       if (options.notify === true) {
-        await vscode.window.showInformationMessage(`已打开设置：${RESOURCE_STRING_LINKS_SETTING_KEY}`);
+        await vscode.window.showInformationMessage('已打开 Image Gallery Preview 设置');
       }
       return;
     } catch (error) {
@@ -974,7 +987,7 @@ export async function openResourceStringLinkSettings(options: SettingsOpenOption
 
   try {
     const scheme = vscode.env.uriScheme || 'vscode';
-    const uri = vscode.Uri.parse(`${scheme}://settings/${RESOURCE_STRING_LINKS_SETTING_KEY}`);
+    const uri = vscode.Uri.parse(`${scheme}://settings/${IMAGE_GALLERY_SETTINGS_QUERY}`);
     options.output?.appendLine(`[settings] open external ${uri.toString()}`);
     const opened = await vscode.env.openExternal(uri);
     if (opened !== false) {
@@ -988,14 +1001,19 @@ export async function openResourceStringLinkSettings(options: SettingsOpenOption
   }
 
   await vscode.window.showErrorMessage(
-    `Unable to open Image Gallery Preview settings. Search ${RESOURCE_STRING_LINKS_SETTING_KEY} in Settings.`
+    'Unable to open Image Gallery Preview settings. Search Image Gallery Preview in Settings.'
   );
-  throw new Error(errors.join('; ') || `Unable to open ${RESOURCE_STRING_LINKS_SETTING_KEY}`);
+  throw new Error(errors.join('; ') || 'Unable to open Image Gallery Preview settings');
 }
 
 function readResourceStringLinksEnabled(): boolean {
   return vscode.workspace.getConfiguration(RESOURCE_STRING_LINKS_SETTING_SECTION)
     .get<boolean>(RESOURCE_STRING_LINKS_SETTING_NAME, false);
+}
+
+export function readDuplicateResourceDetectionEnabled(): boolean {
+  return vscode.workspace.getConfiguration(RESOURCE_STRING_LINKS_SETTING_SECTION)
+    .get<boolean>(DUPLICATE_RESOURCE_DETECTION_SETTING_NAME, false);
 }
 
 export function activate(context: vscode.ExtensionContext): void {

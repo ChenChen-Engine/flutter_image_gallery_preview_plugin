@@ -180,6 +180,7 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
             "updateSettings" -> {
                 val enabled = message.get("resourceStringLinksEnabled")?.asBoolean == true
                 settings.resourceStringLinksEnabled = enabled
+                settings.duplicateResourceDetectionEnabled = message.get("duplicateResourceDetectionEnabled")?.asBoolean == true
                 ApplicationManager.getApplication().invokeLater {
                     if (!enabled) GalleryResourceLinkPresentationService.getInstance(project).clearPresentation()
                     DaemonCodeAnalyzer.getInstance(project).restart()
@@ -321,7 +322,8 @@ class JcefImageGalleryPanel(private val project: Project) : JPanel(BorderLayout(
         sendToWeb(
             mapOf(
                 "type" to "settingsState",
-                "resourceStringLinksEnabled" to settings.resourceStringLinksEnabled
+                "resourceStringLinksEnabled" to settings.resourceStringLinksEnabled,
+                "duplicateResourceDetectionEnabled" to settings.duplicateResourceDetectionEnabled
             )
         )
     }

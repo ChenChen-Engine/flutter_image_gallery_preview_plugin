@@ -60,6 +60,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
     )
 
     private val scanner = ProjectAssetScanner(project)
+    private val settings = GallerySettingsService.getInstance(project)
     private val projectRootPath = project.basePath
         ?.let { AssetFileUtil.normalizePath(File(it).absolutePath).trimEnd('/') }
     private val listeners = CopyOnWriteArrayList<(List<GalleryAssetItem>) -> Unit>()
@@ -85,12 +86,16 @@ class GalleryIndexService(private val project: Project) : Disposable {
         val connection = project.messageBus.connect(this)
         connection.subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
             override fun after(events: List<com.intellij.openapi.vfs.newvfs.events.VFileEvent>) {
-                val duplicatePaths = events
-                    .mapNotNull { event -> duplicateCandidatePath(event) }
-                    .filter { path -> isPathInsideProject(path) }
-                    .filter { path -> isInterestingPath(path) || isInterestingContainerPath(path) }
-                    .map { path -> AssetFileUtil.normalizePath(path) }
-                    .distinct()
+                val duplicatePaths = if (settings.duplicateResourceDetectionEnabled) {
+                    events
+                        .mapNotNull { event -> duplicateCandidatePath(event) }
+                        .filter { path -> isPathInsideProject(path) }
+                        .filter { path -> isInterestingPath(path) || isInterestingContainerPath(path) }
+                        .map { path -> AssetFileUtil.normalizePath(path) }
+                        .distinct()
+                } else {
+                    emptyList()
+                }
                 val syncPaths = events
                     .flatMap { event -> syncCandidatePaths(event) }
                     .filter { path -> isPathInsideProject(path) }
@@ -409,6 +414,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
     }
 
     private fun handleChangedFileDuplicateCheck(changedPath: String) {
+        if (!settings.duplicateResourceDetectionEnabled) return
         val normalizedPath = AssetFileUtil.normalizePath(changedPath)
         val candidates = cache.filter { item ->
             val itemPath = AssetFileUtil.normalizePath(item.absPath)
@@ -420,6 +426,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
     }
 
     private fun handleChangedItemDuplicateCheck(item: GalleryAssetItem) {
+        if (!settings.duplicateResourceDetectionEnabled) return
         val normalizedPath = AssetFileUtil.normalizePath(item.absPath)
         if (item.resourceRootPath.isBlank() || item.md5.isBlank()) return
         val file = File(normalizedPath)
@@ -439,6 +446,7 @@ class GalleryIndexService(private val project: Project) : Disposable {
     }
 
     private fun handleChangedPathDuplicateCheckFast(changedPath: String) {
+        if (!settings.duplicateResourceDetectionEnabled) return
         val file = File(AssetFileUtil.normalizePath(changedPath))
         val candidates = when {
             file.isFile -> sequenceOf(file)

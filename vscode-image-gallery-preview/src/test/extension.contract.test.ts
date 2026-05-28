@@ -309,7 +309,7 @@ suite('extension contracts', () => {
     assert.deepStrictEqual(calls, [
       {
         command: 'workbench.action.openWorkspaceSettings',
-        arg: 'imageGalleryPreview.resourceStringLinksEnabled'
+        arg: '@ext:ChenChen.vscode-image-gallery-preview'
       }
     ]);
   });
@@ -331,17 +331,32 @@ suite('extension contracts', () => {
     assert.deepStrictEqual(calls, [
       {
         command: 'workbench.action.openWorkspaceSettings',
-        arg: 'imageGalleryPreview.resourceStringLinksEnabled'
+        arg: '@ext:ChenChen.vscode-image-gallery-preview'
       },
       {
         command: 'workbench.action.openWorkspaceSettings',
-        arg: '@id:imageGalleryPreview.resourceStringLinksEnabled'
+        arg: 'imageGalleryPreview.resourceStringLinksEnabled'
       },
       {
         command: 'workbench.action.openSettings',
-        arg: 'imageGalleryPreview.resourceStringLinksEnabled'
+        arg: '@ext:ChenChen.vscode-image-gallery-preview'
       }
     ]);
+  });
+
+  test('duplicate resource detection setting defaults off and can be enabled', () => {
+    const defaultModule = requireExtensionModule();
+    const readDuplicateResourceDetectionEnabled = defaultModule.readDuplicateResourceDetectionEnabled as (() => boolean) | undefined;
+    assert.ok(readDuplicateResourceDetectionEnabled, 'expected duplicate detection setting reader to be exported');
+    assert.strictEqual(readDuplicateResourceDetectionEnabled!(), false);
+
+    const enabledModule = requireExtensionModule({
+      configuration: {
+        'imageGalleryPreview.duplicateResourceDetectionEnabled': true
+      }
+    });
+    const readEnabled = enabledModule.readDuplicateResourceDetectionEnabled as (() => boolean) | undefined;
+    assert.strictEqual(readEnabled!(), true);
   });
 });
 
@@ -407,7 +422,10 @@ function normalizeForTest(value: string): string {
   return value.replace(/\\/g, '/');
 }
 
-function requireExtensionModule(overrides: { executeCommand?: (command: string, arg?: string) => Promise<void> } = {}): Record<string, unknown> {
+function requireExtensionModule(overrides: {
+  configuration?: Record<string, unknown>;
+  executeCommand?: (command: string, arg?: string) => Promise<void>;
+} = {}): Record<string, unknown> {
   const originalLoad = (Module as any)._load;
   (Module as any)._load = function patchedLoad(request: string, parent: unknown, isMain: boolean) {
     if (request === 'vscode') {
@@ -435,6 +453,14 @@ function requireExtensionModule(overrides: { executeCommand?: (command: string, 
         },
         workspace: {
           workspaceFolders: [],
+          getConfiguration(section: string) {
+            return {
+              get(name: string, defaultValue: unknown) {
+                return overrides.configuration?.[`${section}.${name}`] ?? defaultValue;
+              },
+              update: async () => undefined
+            };
+          },
           createFileSystemWatcher() {
             return {
               onDidCreate() {},

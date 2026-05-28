@@ -54,16 +54,18 @@ Both plugins now share the same media-gallery contract and the same `gallery-web
   - native / built-in image and media metadata merge
   - `ffprobe` fallback to fill missing stream and duration fields
   - built-in fallback metadata when external tools are unavailable
-- Startup indexing and duplicate detection:
+- Startup indexing and optional duplicate detection:
   - background indexing on IDE / VSCode startup
-  - duplicate resource check by `platform + md5` for every scanned format
-  - duplicate prompts only for later manually added files inside legal resource roots
+  - duplicate resource detection is available in Settings and is disabled by default
+  - when enabled, duplicate checks use `platform + md5` for every scanned format
+  - duplicate prompts only for later manually added or modified files inside legal resource roots
 
 ## Runtime notes
 
 - Both plugins use the shared web gallery and open audio/video in the OS default associated app instead of in-plugin playback.
 - IntelliJ resolves indexed metadata before publishing assets and reports structured loading phases for discovery vs metadata enrichment.
 - Normal `Sync` reuses valid metadata from memory and persisted cache. Use `Refresh` only when you intentionally want to rebuild metadata for every file.
+- `Settings > Image Gallery Preview` contains experimental toggles. Resource string links and duplicate resource detection are both disabled by default.
 - IntelliJ shows a host-side loading state while JCEF is starting so the tool window is never blank.
 - IntelliJ requires an IDE runtime with JCEF support; when JCEF is unavailable the tool window shows a large runtime instruction message and does not fall back to a system-browser gallery.
 - VSCode uses incremental worker-based scanning, partial publishes, and loading diagnostics with phase/count/path, elapsed/heartbeat details, worker status, and OutputChannel diagnostics for long scans.

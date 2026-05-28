@@ -82,7 +82,7 @@ Both plugins align on:
 - Direct executable discovery is cached per plugin process; do not re-scan PATH or version-probe MediaInfo for every item.
 - Non-retryable metadata is persisted for unchanged files and reused by normal `Sync`.
 - `Refresh` clears/bypasses persisted metadata and should be treated as the expensive full rebuild path.
-- Metadata extraction is bounded parallel work with a maximum of 6 concurrent items per host.
+- Metadata extraction is bounded parallel work with a maximum of 50 concurrent items per host and a minimum target of 10 workers.
 - A single item is allowed to time out and fall back to lightweight metadata; indexing continues.
 - Timeout, parse-empty, command-failed, and fallback states are represented in the metadata source label so both the loading overlay and `i` dialog explain why full MediaInfo rows are missing.
 - Timed-out or fallback metadata is not treated as a permanent rich metadata cache. Clicking `i` retries extraction on demand, and the dialog refresh button forces a fresh MediaInfo read.
@@ -104,9 +104,10 @@ Both plugins align on:
 ## Duplicate handling
 
 - Startup background indexing is enabled.
+- Duplicate resource detection is a user setting and defaults to off.
 - Duplicate key is `same platform + md5`; all scanned resource formats participate, not only images.
-- New file is checked immediately after creation or modification using the in-memory MD5 index before the full sync completes.
-- Existing duplicates found during startup/full indexing are not forced on the user; only later manually added duplicate resources prompt.
+- When duplicate detection is enabled, a new or modified file is checked immediately using the in-memory MD5 index before the full sync completes.
+- Existing duplicates found during startup/full indexing are not forced on the user; only later manually added or modified duplicate resources prompt.
 - If duplicate is found:
   - Prompt with:
     - `强制添加新资源`

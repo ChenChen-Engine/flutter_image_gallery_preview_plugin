@@ -1,8 +1,8 @@
 {
   "name": "vscode-image-gallery-preview",
   "displayName": "Image Gallery Preview",
-  "description": "在 VSCode 侧边栏中预览 Android、Flutter、iOS 资源，支持分组筛选、信息查看和重复资源检测。",
-  "version": "1.2.3",
+  "description": "在 VSCode 侧边栏中预览 Android、Flutter、iOS 资源，支持分组筛选、信息查看和可选重复资源检测。",
+  "version": "1.2.4",
   "publisher": "ChenChen",
   "author": "uǝɥƆuǝɥƆ",
   "engines": {
@@ -59,6 +59,11 @@
           "type": "boolean",
           "default": false,
           "description": "启用资源字符串跳转。开启后，完整匹配索引资源路径的静态字符串可通过 Ctrl/Cmd+Click 跳转到资源文件。"
+        },
+        "imageGalleryPreview.duplicateResourceDetectionEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "启用重复资源检测。开启后，手动新增或修改资源文件时会按 MD5 检测同平台重复资源并弹出处理提示。"
         }
       }
     },
